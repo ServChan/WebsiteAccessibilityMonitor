@@ -10,6 +10,10 @@ import sys
 import time
 from datetime import datetime
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+from rich.style import Style
 from colorama import Fore, Style
 
 if getattr(sys, 'frozen', False):
@@ -18,6 +22,8 @@ else:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
 config_path = os.path.join(script_dir, 'config.json')
+console = Console()
+
 
 def load_config():
     try:
@@ -29,7 +35,7 @@ def load_config():
                 "interval": 60,
                 "timeout": 5,
                 "valid_status_codes": [200, 201, 202, 204, 300, 301, 302, 303, 307, 308],
-                "sorted": True
+                "sorted": "status"
             },
             "websites": [
                 "ya.ru",
@@ -57,208 +63,127 @@ def load_config():
         print(f"Файл конфигурации создан по пути: {config_path}")
         return default_config
 
+
 def print_banner():
     os.system('cls' if os.name == 'nt' else 'clear')
-    c = os.get_terminal_size().columns
-    t = [
-        Fore.CYAN + '=' * c,
-        'МОНИТОРИНГ ДОСТУПНОСТИ САЙТОВ'.center(c),
-        'Версия 1.1.7'.center(c),
-        '=' * c + Style.RESET_ALL
-    ]
-    print('\n'.join(t))
+    console.print("=" * console.width, style="cyan")
+    console.print("МОНИТОРИНГ ДОСТУПНОСТИ САЙТОВ".center(console.width), style="bold cyan")
+    console.print("Версия 1.2.0".center(console.width), style="cyan")
+    console.print("=" * console.width, style="cyan")
 
-def get_dns_settings():
-    try:
-        if platform.system() == "Windows":
-            r = subprocess.run("ipconfig /all", capture_output=True, text=True, shell=True, encoding="cp866")
-            d = [line.strip() for line in r.stdout.splitlines() if "DNS-серверы" in line or "DNS Servers" in line]
-        else:
-            r = subprocess.run(["nmcli", "dev", "show"], capture_output=True, text=True)
-            d = [line.strip() for line in r.stdout.splitlines() if "IP4.DNS" in line]
-        print(f"{Fore.CYAN}Текущие настройки DNS:{Style.RESET_ALL}")
-        for i in d:
-            print(f"{Fore.GREEN}{i}{Style.RESET_ALL}")
-    except Exception as e:
-        print(f"{Fore.RED}Ошибка при получении настроек DNS: {e}{Style.RESET_ALL}")
 
-async def measure_ping_time(domain):
-    try:
-        s = time.time()
-        await asyncio.to_thread(socket.create_connection, (domain, 80), timeout=5)
-        return round((time.time() - s) * 1000, 2)
-    except Exception:
-        return None
-
-async def check_website(url, config):
+async def check_website(url, config, session):
     ms = config.get("monitor_settings", {})
     t = ms.get("timeout", 5)
     v = ms.get("valid_status_codes", [200])
-    c = ssl.create_default_context()
+
     try:
         ip = await asyncio.to_thread(socket.gethostbyname, url)
-    except Exception:
-        return {"url": url, "ip": "N/A", "status": f"[{Fore.RED}{'N/A'.center(10)}{Style.RESET_ALL}]", "code": "DNS_ERROR"}
-    try:
-        async with ClientSession(connector=TCPConnector(ssl=c)) as s:
-            async with s.get(f"https://{url}", timeout=ClientTimeout(total=t)) as r:
-                ok = r.status in v
-                co = Fore.GREEN if ok else Fore.RED
-                return {
-                    "url": url,
-                    "ip": ip,
-                    "status": f"[{co}{('ДОСТУПЕН' if ok else 'НЕДОСТУПЕН').center(10)}{Style.RESET_ALL}]",
-                    "code": r.status
-                }
-    except asyncio.TimeoutError:
-        return {
-            "url": url,
-            "ip": ip,
-            "status": f"[{Fore.RED}{'НЕДОСТУПЕН'.center(10)}{Style.RESET_ALL}]",
-            "code": "T/O"
-        }
-    except Exception:
-        return {
-            "url": url,
-            "ip": ip,
-            "status": f"[{Fore.RED}{'НЕДОСТУПЕН'.center(10)}{Style.RESET_ALL}]",
-            "code": "ERR"
-        }
-
-async def check_internet():
-    try:
-        await asyncio.to_thread(socket.create_connection, ("8.8.8.8", 53), timeout=5)
-        return True
-    except Exception:
-        return False
-
-def check_network_interfaces():
-    try:
-        if platform.system() == "Windows":
-            result = subprocess.run("netsh interface show interface", capture_output=True, text=True, shell=True, encoding="cp866")
-            lines = result.stdout.splitlines()
-            active_interfaces = [line for line in lines if "Подключен" in line or "Connected" in line]
-        else:
-            result = subprocess.run(["nmcli", "device", "status"], capture_output=True, text=True)
-            lines = result.stdout.splitlines()
-            active_interfaces = [line for line in lines if "connected" in line]
-        if active_interfaces:
-            print(f"{Fore.GREEN}Активные сетевые интерфейсы:{Style.RESET_ALL}")
-            for interface in active_interfaces:
-                print(interface)
-        else:
-            print(f"{Fore.RED}Нет активных сетевых интерфейсов.{Style.RESET_ALL}")
     except Exception as e:
-        print(f"{Fore.RED}Ошибка при проверке сетевых интерфейсов: {e}{Style.RESET_ALL}")
+        return {"url": url, "ip": "N/A", "status": "DNS_ERROR", "code": "ERR", "error_type": "DNS"}
 
-async def loading_animation():
-    for char in itertools.cycle('|/-\\'):
-        sys.stdout.write(f'\r{Fore.MAGENTA}Выполняется тестирование {char}...{Style.RESET_ALL}')
-        sys.stdout.flush()
-        await asyncio.sleep(0.2)
+    try:
+        async with session.get(f"https://{url}", timeout=ClientTimeout(total=t)) as r:
+            ok = r.status in v
+            return {
+                "url": url,
+                "ip": ip,
+                "status": "OK" if ok else "HTTP_ERROR",
+                "code": r.status,
+                "error_type": None
+            }
+    except asyncio.TimeoutError:
+        return {"url": url, "ip": ip, "status": "TIMEOUT", "code": "T/O", "error_type": "TIMEOUT"}
+    except ssl.SSLError:
+        return {"url": url, "ip": ip, "status": "SSL_ERROR", "code": "SSL", "error_type": "SSL"}
+    except Exception as e:
+        return {"url": url, "ip": ip, "status": "CONN_ERROR", "code": "ERR", "error_type": "NETWORK"}
 
-async def log_website_statuses(results, pings, config):
+
+async def monitor_websites(config):
+    ms = config.get("monitor_settings", {})
+    websites = config.get("websites", [])
+    sort_mode = ms.get("sorted", "status")
+
+    async with ClientSession(connector=TCPConnector(ssl=ssl.create_default_context())) as session:
+        while True:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print_banner()
+            console.print(f"Мониторинг начался в: [bold yellow]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/]\n")
+
+            with Progress(SpinnerColumn(), TextColumn("[bold cyan]{task.description}")) as progress:
+                task = progress.add_task("Проверка сайтов...", total=len(websites))
+                tasks = [check_website(site, config, session) for site in websites]
+                results = []
+                for future in asyncio.as_completed(tasks):
+                    results.append(await future)
+                    progress.update(task, advance=1)
+
+            # Сортировка результатов
+            if sort_mode == "status":
+                results.sort(key=lambda x: (x["status"] != "OK", x["url"]))
+            elif sort_mode == "response_time":
+                results.sort(key=lambda x: x.get("ping", float('inf')))
+
+            # Создание таблицы с выравниванием
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Статус", width=12, justify="center")
+            table.add_column("Сайт", justify="left")
+            table.add_column("IP", style="magenta", justify="left")
+            table.add_column("Код", justify="center")
+            table.add_column("Тип ошибки", justify="center")
+
+            up_count = 0
+            for res in results:
+                # Определение стилей
+                site_style = "bold white" if res["status"] == "OK" else "bold red"
+                status_style = "bold green" if res["status"] == "OK" else "bold red"
+                error_type = res["error_type"] if res["status"] != "OK" else ""
+
+                if res["status"] == "OK":
+                    up_count += 1
+
+                table.add_row(
+                    f"[{status_style}]{res['status']}[/]",
+                    f"[{site_style}]{res['url']}[/]",
+                    res["ip"],
+                    f"[bold]{str(res['code'])}[/]",
+                    f"[bold red]{error_type}[/]" if error_type else ""
+                )
+
+            console.print(table)
+            console.print(f"\n[bold]Итого доступно: [green]{up_count}[/]/[yellow]{len(results)}[/] сайтов[/]")
+            console.print(f"\n[bold magenta]Следующая проверка через {ms.get('interval', 60)} секунд...[/]")
+            await asyncio.sleep(ms.get('interval', 60))
+
+
+async def log_website_statuses(results, config):
     try:
         monitor_cfg = config.get("Monitor", {})
         if monitor_cfg.get("logging_enabled", False):
             log_path = os.path.join(script_dir, monitor_cfg.get("log_file_path", "monitor.log"))
-            log_data = []
-            for res, ping in zip(results, pings):
-                log_entry = {
-                    "url": res["url"],
-                    "ip": res["ip"],
-                    "status": "ДОСТУПЕН" if "[\x1b[32m" in res["status"] else "НЕДОСТУПЕН",
-                    "code": res["code"],
-                    "ping": f"{ping:.2f} мс" if ping is not None else "N/A"
-                }
-                log_data.append(log_entry)
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "results": [
+                    {k: v for k, v in res.items() if k != "error_type"}
+                    for res in results
+                ]
+            }
             with open(log_path, 'a', encoding='utf-8') as f:
-                json.dump({
-                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    "results": log_data
-                }, f, ensure_ascii=False, indent=4)
+                json.dump(log_entry, f, ensure_ascii=False)
                 f.write("\n")
     except Exception as e:
-        print(f"{Fore.RED}Ошибка при записи лога: {e}{Style.RESET_ALL}")
+        console.print(f"[red]Ошибка записи лога: {e}[/]")
 
-async def monitor_websites(config):
-    ms = config.get("monitor_settings", {})
-    w = config.get("websites", [])
-    if ms.get("sorted", False):
-        w = sorted(w)
-    i = ms.get("interval", 60)
-    while True:
-        os.system('cls' if os.name == 'nt' else 'clear')
-        print_banner()
-        print(f"{Fore.YELLOW}Мониторинг начался в: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}\n")
-        loading_task = asyncio.create_task(loading_animation())
-        try:
-            tasks = [check_website(site, config) for site in w]
-            results = await asyncio.gather(*tasks)
-        finally:
-            loading_task.cancel()
-            await asyncio.sleep(0.1)
-            print('\r' + ' ' * 80 + '\r')
-        pt = [measure_ping_time(r["url"]) for r in results]
-        pr = await asyncio.gather(*pt)
-        md = max(len(r["url"]) for r in results)
-        mi = max(len(r["ip"]) for r in results)
-        mp = max((len(f"{p:.2f} мс") for p in pr if p is not None), default=0)
-        up_count = 0
-        for res, ping in zip(results, pr):
-            if "[\x1b[32m" in res["status"]:
-                up_count += 1
-            if ping is None:
-                po = f"{Fore.RED}{'N/A'.ljust(mp)}{Style.RESET_ALL}"
-            else:
-                if ping < 100:
-                    po = f"{Fore.GREEN}{f'{ping:.2f} мс'.ljust(mp)}{Style.RESET_ALL}"
-                elif ping < 300:
-                    po = f"{Fore.YELLOW}{f'{ping:.2f} мс'.ljust(mp)}{Style.RESET_ALL}"
-                else:
-                    po = f"{Fore.RED}{f'{ping:.2f} мс'.ljust(mp)}{Style.RESET_ALL}"
-            cc = Fore.YELLOW if res["code"] == "T/O" else (Fore.RED if res["code"] == "ERR" else Style.RESET_ALL)
-            print(f"{res['status']} {res['url']:<{md}} -> {res['ip']:<{mi}} [Код: {cc}{res['code']}{Style.RESET_ALL} // {po}]")
-        print(f"\nИтого доступно {up_count} из {len(results)} сайтов.")
-        if up_count == 0:
-            online = await check_internet()
-            if not online:
-                print(f"{Fore.RED}Вероятно, у вас нет интернет-соединения{Style.RESET_ALL}")
-                check_network_interfaces()
-        await log_website_statuses(results, pr, config)
-        print(f"{Fore.MAGENTA}Следующая проверка начнётся через {i} секунд...{Style.RESET_ALL}\n")
-        await asyncio.sleep(i)
-
-def print_config_info(cfg):
-    w = cfg.get("websites", [])
-    ms = cfg.get("monitor_settings", {})
-    mc = cfg.get("Monitor", {})
-    s = ms.get("sorted", False)
-    i = ms.get("interval", 60)
-    t = ms.get("timeout", 5)
-    v = ms.get("valid_status_codes", [])
-    le = mc.get("logging_enabled", False)
-    lp = mc.get("log_file_path", "monitor.log")
-    print(f"{Fore.YELLOW}Конфигурация загружена!{Style.RESET_ALL}")
-    print(f"Обработано {len(w)} сайтов.")
-    print(f"Сортировка: {s}")
-    print(f"Интервал проверок: {i} c.")
-    print(f"Таймаут запросов: {t} c.")
-    print(f"Валидные коды ответа: {v}")
-    print(f"Логгирование: {le}")
-    if le:
-        print(f"Файл лога: {lp}")
-    time.sleep(10)
 
 def main():
     config = load_config()
     print_banner()
-    print_config_info(config)
-    get_dns_settings()
     try:
         asyncio.run(monitor_websites(config))
     except KeyboardInterrupt:
-        print(f"{Fore.RED}Мониторинг остановлен пользователем. Завершение работы...{Style.RESET_ALL}")
+        console.print("\n[red]Мониторинг остановлен пользователем[/]")
+
 
 if __name__ == "__main__":
     main()
