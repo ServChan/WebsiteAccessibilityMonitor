@@ -1,33 +1,37 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
-
+using System.Net.Http;
+using System.Net.Security;
+using System.Net.Http.Headers;
+using System.Diagnostics;
 namespace SiteMonitor
 {
     public class MonitorSettings
     {
         public int interval { get; set; } = 60;
         public int timeout { get; set; } = 5;
-        public List<int> valid_status_codes { get; set; } = new() { 200, 201, 202, 204, 300, 301, 302, 303, 307, 308 };
+        public int retries_max { get; set; } = 2;
+        public List<int> valid_status_codes { get; set; } = new() { 200, 201, 202, 204, 300, 301, 302, 303, 307, 308, 405, 418 };
+        public List<int> warn_status_codes { get; set; } = new() { 401, 403, 429 };
         public string sorted { get; set; } = "status";
         public bool ping_enabled { get; set; } = true;
         public bool uptime_enabled { get; set; } = false;
+        public bool use_head_first { get; set; } = true;
     }
-
     public class MonitorConfig
     {
         public bool logging_enabled { get; set; } = false;
         public string log_file_path { get; set; } = "monitor.log";
     }
-
     public class Config
     {
         public MonitorSettings monitor_settings { get; set; } = new();
         public List<string> websites { get; set; } = new();
         public MonitorConfig Monitor { get; set; } = new();
     }
-
     public class WebsiteResult
     {
         public string url { get; set; } = string.Empty;
@@ -35,8 +39,10 @@ namespace SiteMonitor
         public string status { get; set; } = string.Empty;
         public string code { get; set; } = string.Empty;
         public string error_type { get; set; } = string.Empty;
+        public long duration_ms { get; set; }
+        public int retries { get; set; }
+        public string http_method { get; set; } = "GET";
     }
-
     class Program
     {
         static string scriptDir = string.Empty;
@@ -48,132 +54,88 @@ namespace SiteMonitor
         static Dictionary<string, List<bool>> uptimeHistory = new();
         static Dictionary<string, int> failureCount = new();
         static bool configReloaded = false;
-
+        static Dictionary<string, bool> alertLocked = new();
         static async Task Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             scriptDir = AppDomain.CurrentDomain.BaseDirectory;
             configPath = Path.Combine(scriptDir, "config.json");
             Console.CancelKeyPress += (s, e) => { e.Cancel = true; exitRequested = true; };
-            PrintBanner();
-            bool configExists = File.Exists(configPath);
             config = LoadOrCreateConfigWithMessage();
-            if (!configExists)
-            {
-                PrintIntro(config);
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine("\nНажмите любую клавишу для начала мониторинга...");
-                Console.ResetColor();
-                Console.ReadKey(true);
-            }
-            Console.Clear();
+            SafeClear();
+            PrintBanner();
             StartHttpClient();
             while (!exitRequested)
             {
                 var startTime = DateTime.Now;
-                var results = await Task.WhenAll(config.websites.Select(site => CheckWebsiteAsync(site)));
-                if (config.monitor_settings.sorted == "status")
-                    results = results.OrderBy(r => r.status != "OK").ThenBy(r => r.url).ToArray();
-                Console.Clear();
+                int total = config.websites.Count;
+                int done = 0;
+                using var overlayCts = new CancellationTokenSource();
+                var overlayTask = RunOverlayAsync(total, () => Volatile.Read(ref done), overlayCts.Token);
+                var tasks = config.websites.Select(site => CheckWebsiteWrapped(site, () => Interlocked.Increment(ref done))).ToArray();
+                var results = await Task.WhenAll(tasks);
+                overlayCts.Cancel();
+                try { await overlayTask; } catch { }
+                if (config.monitor_settings.sorted == "status") results = results.OrderBy(r => r.status != "OK" && r.status != "WARN").ThenBy(r => r.url).ToArray();
+                SafeClear();
                 PrintBanner();
-                Console.WriteLine($"Мониторинг начался в: {startTime:yyyy-MM-dd HH:mm:ss}\n");
+                SafeWriteLine($"Мониторинг начался в: {startTime:yyyy-MM-dd HH:mm:ss}\n");
                 PrintResults(results);
                 if (config.monitor_settings.uptime_enabled)
                 {
                     int historyMax = 1440;
                     foreach (var r in results)
                     {
-                        if (!uptimeHistory.ContainsKey(r.url))
-                            uptimeHistory[r.url] = new List<bool>();
-                        uptimeHistory[r.url].Add(r.status == "OK");
-                        if (uptimeHistory[r.url].Count > historyMax)
-                            uptimeHistory[r.url].RemoveAt(0);
+                        if (!uptimeHistory.ContainsKey(r.url)) uptimeHistory[r.url] = new List<bool>();
+                        uptimeHistory[r.url].Add(r.status == "OK" || r.status == "WARN");
+                        if (uptimeHistory[r.url].Count > historyMax) uptimeHistory[r.url].RemoveAt(0);
                     }
-                    Console.WriteLine(new string('-', Console.WindowWidth));
-                    Console.ForegroundColor = ConsoleColor.Cyan;
-                    string uptimeTitle = "АПТАЙМ ЗА СУТКИ";
-                    Console.WriteLine(uptimeTitle.PadLeft((Console.WindowWidth + uptimeTitle.Length) / 2));
-                    Console.ResetColor();
-                    Console.WriteLine(new string('-', Console.WindowWidth));
+                    SafeWriteLine(new string('-', GetWidth()));
+                    WriteCentered("АПТАЙМ ЗА СУТКИ", ConsoleColor.Cyan);
+                    SafeWriteLine(new string('-', GetWidth()));
                     PrintUptime(results);
                 }
                 foreach (var r in results)
                 {
                     if (!failureCount.ContainsKey(r.url)) failureCount[r.url] = 0;
-                    if (r.status != "OK") failureCount[r.url]++;
-                    else failureCount[r.url] = 0;
+                    if (r.status == "OK" || r.status == "WARN") failureCount[r.url] = 0; else failureCount[r.url]++;
                     if (failureCount[r.url] == 3)
                     {
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"[АЛЕРТ] Сайт {r.url} трижды подряд недоступен! Статус: {r.status}");
-                        Console.ResetColor();
+                        SetColor(ConsoleColor.Yellow);
+                        SafeWriteLine($"[АЛЕРТ] Сайт {r.url} трижды подряд недоступен! Статус: {r.status}");
+                        ResetColor();
                     }
                 }
-                if (results.All(r => r.status != "OK"))
+                if (results.All(r => r.status != "OK" && r.status != "WARN"))
                 {
-                    Console.WriteLine("\nНи один сайт не отвечает. Информация об интерфейсах:");
+                    SafeWriteLine("\nНи один сайт не отвечает. Информация об интерфейсах:");
                     foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
                     {
-                        Console.WriteLine($"[{ni.Name}] {ni.Description} — {ni.OperationalStatus}");
+                        SafeWriteLine($"[{ni.Name}] {ni.Description} — {ni.OperationalStatus}");
                         var ipProps = ni.GetIPProperties();
-                        foreach (var ip in ipProps.UnicastAddresses)
-                        {
-                            Console.WriteLine($" IP: {ip.Address}");
-                        }
+                        foreach (var ip in ipProps.UnicastAddresses) SafeWriteLine($" IP: {ip.Address}");
                     }
                 }
-                if (configReloaded)
-                {
-                    configReloaded = false;
-                }
-                if (config.Monitor.logging_enabled)
-                    await LogResults(results);
-                Console.WriteLine();
-                int countdownLine = Console.CursorTop;
-                int totalDelay = config.monitor_settings.interval * 1000;
+                if (configReloaded) configReloaded = false;
+                if (config.Monitor.logging_enabled) await LogResults(results);
+                SafeWriteLine();
+                int countdownLine = GetCursorTop();
+                int totalDelay = Math.Max(1, config.monitor_settings.interval) * 1000;
                 int delayStep = 100;
                 int elapsed = 0;
-                int storedWidth = Console.WindowWidth;
                 bool breakNow = false;
                 while (elapsed < totalDelay && !exitRequested)
                 {
-                    if (Console.WindowWidth < 80)
-                    {
-                        Console.Clear();
-                        PrintBanner();
-                        Console.WriteLine($"Мониторинг начался в: {startTime:yyyy-MM-dd HH:mm:ss}\n");
-                        PrintResults(results);
-                        if (config.monitor_settings.uptime_enabled)
-                        {
-                            Console.WriteLine(new string('-', Console.WindowWidth));
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            string uptimeTitle = "АПТАЙМ ЗА СУТКИ";
-                            Console.WriteLine(uptimeTitle.PadLeft((Console.WindowWidth + uptimeTitle.Length) / 2));
-                            Console.ResetColor();
-                            Console.WriteLine(new string('-', Console.WindowWidth));
-                            PrintUptime(results);
-                        }
-                        Console.WriteLine();
-                        countdownLine = Console.CursorTop;
-                    }
                     int remaining = totalDelay - elapsed;
                     int remainingSec = (remaining + 999) / 1000;
                     int totalBars = 30;
-                    int filledBars = totalBars - (remaining * totalBars) / totalDelay;
+                    int filledBars = Math.Clamp(totalBars - (remaining * totalBars) / Math.Max(1, totalDelay), 0, totalBars);
                     string bar = "[" + new string('█', filledBars) + new string('░', totalBars - filledBars) + $"] {remainingSec}s";
-                    Console.SetCursorPosition(0, countdownLine);
-                    Console.Write("Нажмите ");
-                    Console.ForegroundColor = ConsoleColor.Blue;
-                    Console.Write("R");
-                    Console.ResetColor();
-                    Console.Write(" для обновления или ожидайте ");
-                    Console.Write(bar);
-                    Console.Write(". Нажмите ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.Write("Ctrl+C");
-                    Console.ResetColor();
-                    Console.Write(" для выхода.");
-                    if (Console.KeyAvailable)
+                    SafeSetCursorPosition(0, countdownLine);
+                    SafeWrite("Нажмите "); SetColor(ConsoleColor.Blue); SafeWrite("R"); ResetColor();
+                    SafeWrite(" для обновления или ожидайте "); SafeWrite(bar);
+                    SafeWrite(". Нажмите "); SetColor(ConsoleColor.Red); SafeWrite("Ctrl+C"); ResetColor(); SafeWrite(" для выхода.");
+                    if (ConsoleIsInteractive() && Console.KeyAvailable)
                     {
                         var key = Console.ReadKey(true);
                         if (key.Key == ConsoleKey.R)
@@ -188,40 +150,77 @@ namespace SiteMonitor
                     await Task.Delay(delayStep);
                     elapsed += delayStep;
                 }
-                if (!breakNow)
-                    Console.WriteLine();
+                if (!breakNow) SafeWriteLine();
             }
         }
-
+        static async Task<WebsiteResult> CheckWebsiteWrapped(string site, Action onDone)
+        {
+            try { return await CheckWebsiteAsync(site); } finally { onDone(); }
+        }
+        static async Task RunOverlayAsync(int total, Func<int> getDone, CancellationToken token)
+        {
+            var sw = Stopwatch.StartNew();
+            string[] frames = new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+            int i = 0;
+            while (!token.IsCancellationRequested)
+            {
+                int done = getDone();
+                string t1 = $" СКАНИРОВАНИЕ {frames[i % frames.Length]} ";
+                string t2 = $" Готово {done}/{total} • {sw.Elapsed:mm\\:ss\\.f} ";
+                int w = GetWidth(); int h = GetHeight();
+                int boxW = Math.Max(Math.Max(t1.Length, t2.Length) + 4, 28);
+                int boxH = 4;
+                int left = Math.Max(0, (w - boxW) / 2);
+                int top = Math.Max(0, (h - boxH) / 2);
+                string horiz = new string('─', boxW - 2);
+                SafeSetCursorPosition(left, top);
+                SetColor(ConsoleColor.DarkGray); SafeWrite("┌" + horiz + "┐");
+                SafeSetCursorPosition(left, top + 1); SafeWrite("│" + CenterInBox(t1, boxW - 2) + "│");
+                SafeSetCursorPosition(left, top + 2); SafeWrite("│" + CenterInBox(t2, boxW - 2) + "│");
+                SafeSetCursorPosition(left, top + 3); SafeWrite("└" + horiz + "┘"); ResetColor();
+                try { await Task.Delay(125, token); } catch { break; }
+                i++;
+            }
+            ResetColor();
+        }
         static void StartHttpClient()
         {
-            handler = new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = true };
+            handler = new SocketsHttpHandler
+            {
+                UseProxy = false,
+                AllowAutoRedirect = true,
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                MaxConnectionsPerServer = 64,
+                SslOptions = new SslClientAuthenticationOptions
+                {
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    CertificateRevocationCheckMode = X509RevocationMode.Online
+                },
+                Expect100ContinueTimeout = TimeSpan.Zero
+            };
             client = new HttpClient(handler);
-            client.Timeout = TimeSpan.FromSeconds(config.monitor_settings.timeout);
+            client.Timeout = TimeSpan.FromSeconds(Math.Max(1, config.monitor_settings.timeout));
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
         }
-
         static void RestartHttpClient()
         {
-            client.Dispose();
-            handler.Dispose();
+            try { client?.Dispose(); } catch { }
+            try { handler?.Dispose(); } catch { }
             StartHttpClient();
         }
-
         static void PrintBanner()
         {
-            int width = Console.WindowWidth;
+            int width = GetWidth();
             string line = new string('=', width);
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine(line);
-            string title = "МОНИТОРИНГ ДОСТУПНОСТИ САЙТОВ";
-            Console.WriteLine(title.PadLeft((width + title.Length) / 2));
-            string version = "Версия 1.3.0";
-            Console.WriteLine(version.PadLeft((width + version.Length) / 2));
-            Console.WriteLine(line);
-            Console.ResetColor();
+            SetColor(ConsoleColor.Cyan);
+            SafeWriteLine(line);
+            WriteCentered("МОНИТОРИНГ ДОСТУПНОСТИ САЙТОВ", null);
+            WriteCentered("Версия 1.3.6", null);
+            SafeWriteLine(line);
+            ResetColor();
         }
-
         static Config LoadOrCreateConfigWithMessage()
         {
             Config def = CreateDefaultConfig();
@@ -232,95 +231,62 @@ namespace SiteMonitor
                     string json = File.ReadAllText(configPath);
                     var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                     Config conf = JsonSerializer.Deserialize<Config>(json, options) ?? def;
-                    if (conf.monitor_settings == null)
-                        conf.monitor_settings = def.monitor_settings;
-                    if (conf.Monitor == null)
-                        conf.Monitor = def.Monitor;
-                    if (conf.websites == null || conf.websites.Count == 0)
-                        conf.websites = def.websites;
+                    if (conf.monitor_settings == null) conf.monitor_settings = def.monitor_settings;
+                    if (conf.Monitor == null) conf.Monitor = def.Monitor;
+                    if (conf.websites == null || conf.websites.Count == 0) conf.websites = def.websites;
+                    NormalizeSettings(conf.monitor_settings, def.monitor_settings);
+                    if (conf.monitor_settings.sorted != "status" && conf.monitor_settings.sorted != "url") conf.monitor_settings.sorted = "status";
                     return conf;
                 }
-                catch
-                {
-                    return def;
-                }
+                catch { return def; }
             }
             else
             {
-                Console.WriteLine("Конфигурация не обнаружена.");
-                Console.WriteLine("Создаю базовый файл конфигурации...");
-                try
-                {
-                    SaveConfig(def);
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("Файл создан успешно.");
-                    Console.ResetColor();
-                    return def;
-                }
-                catch
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("Ошибка создания файла!");
-                    Console.ResetColor();
-                    return def;
-                }
+                try { SaveConfig(def); } catch { }
+                return def;
             }
         }
-
+        static void NormalizeSettings(MonitorSettings ms, MonitorSettings def)
+        {
+            ms.interval = Math.Clamp(ms.interval, 1, 86400);
+            ms.timeout = Math.Clamp(ms.timeout, 1, 300);
+            ms.retries_max = Math.Clamp(ms.retries_max, 0, 5);
+            if (ms.valid_status_codes == null || ms.valid_status_codes.Count == 0) ms.valid_status_codes = def.valid_status_codes;
+            if (ms.warn_status_codes == null) ms.warn_status_codes = def.warn_status_codes;
+            ms.valid_status_codes = ms.valid_status_codes.Distinct().OrderBy(x => x).ToList();
+            ms.warn_status_codes = ms.warn_status_codes.Distinct().OrderBy(x => x).ToList();
+        }
         static Config CreateDefaultConfig() => new()
         {
             monitor_settings = new MonitorSettings(),
             websites = new List<string>
             {
-                "https://ya.ru", "https://google.com", "https://example.com",
-                "https://vk.com", "https://youtube.com", "https://github.com",
-                "https://steamcommunity.com", "https://store.steampowered.com", "https://twitch.tv",
-                "https://reddit.com", "https://wikipedia.org", "https://x.com",
+                "https://ya.ru","https://google.com","https://example.com",
+                "https://vk.com","https://youtube.com","https://github.com",
+                "https://steamcommunity.com","https://store.steampowered.com","https://twitch.tv",
+                "https://reddit.com","https://wikipedia.org","https://x.com"
             },
             Monitor = new MonitorConfig()
         };
-
         static void SaveConfig(Config conf)
         {
             string json = JsonSerializer.Serialize(conf, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(configPath, json);
         }
-
-        static void PrintIntro(Config conf)
+        static async Task<WebsiteResult> CheckWebsiteAsync(string rawUrl)
         {
-            Console.WriteLine("\nБазовые настройки:");
-            Console.WriteLine($"Интервал обновления: {conf.monitor_settings.interval} сек — задержка между проверками.");
-            Console.WriteLine($"Таймаут подключения: {conf.monitor_settings.timeout} сек — максимальное время ожидания ответа.");
-            Console.WriteLine($"Сортировка по статусу: {conf.monitor_settings.sorted} — как упорядочивать таблицу (status/url).");
-            Console.WriteLine($"Проверка пингом: {(conf.monitor_settings.ping_enabled ? "включена" : "отключена")} — отправка ICMP-запросов.");
-            Console.WriteLine($"Статистика аптайма: {(conf.monitor_settings.uptime_enabled ? "включена" : "отключена")} — анализ за сутки.");
-            Console.WriteLine($"Логирование: {(conf.Monitor.logging_enabled ? "включено" : "отключено")} — сохранение в файл {conf.Monitor.log_file_path}.");
-            Console.WriteLine($"Количество сайтов: {conf.websites.Count} — список проверяемых адресов.");
-        }
-
-        static async Task<WebsiteResult> CheckWebsiteAsync(string url)
-        {
-            WebsiteResult result = new() { url = url };
-            string host = url.Replace("https://", "").Replace("http://", "").Split('/')[0];
+            WebsiteResult result = new() { url = rawUrl, ip = "N/A", status = "INIT", code = "", error_type = "" };
+            if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri)) { result.status = "URL_ERROR"; result.code = "ERR"; result.error_type = "URL"; return result; }
+            string host = uri.Host;
             if (config.monitor_settings.ping_enabled)
             {
                 try
                 {
-                    Ping ping = new();
+                    using var ping = new Ping();
                     var reply = await ping.SendPingAsync(host, 2000);
-                    if (reply.Status != IPStatus.Success)
-                    {
-                        result.status = "PING_FAIL";
-                        result.code = "N/A";
-                        result.error_type = "ICMP";
-                    }
+                    if (reply.Status != IPStatus.Success && reply.Status != IPStatus.TimedOut) result.error_type = string.IsNullOrEmpty(result.error_type) ? "ICMP" : result.error_type;
                 }
-                catch
-                {
-                    result.status = "PING_ERR";
-                    result.code = "ERR";
-                    result.error_type = "ICMP_EX";
-                }
+                catch { result.error_type = string.IsNullOrEmpty(result.error_type) ? "ICMP_EX" : result.error_type; }
             }
             try
             {
@@ -329,75 +295,153 @@ namespace SiteMonitor
             }
             catch
             {
-                result.ip = "N/A";
-                result.status = "DNS_ERROR";
-                result.code = "ERR";
-                result.error_type = "DNS";
-                return result;
+                result.status = "DNS_ERROR"; result.code = "ERR"; result.error_type = "DNS"; return result;
             }
-            try
+            int attempts = config.monitor_settings.retries_max + 1;
+            int tries = 0;
+            string methodUsed = config.monitor_settings.use_head_first ? "HEAD" : "GET";
+            var delays = new int[] { 250, 750, 1500 };
+            Exception? lastEx = null;
+            var swTotal = Stopwatch.StartNew();
+            while (tries < attempts)
             {
-                var response = await client.GetAsync(url);
-                int statusCode = (int)response.StatusCode;
-                result.status = config.monitor_settings.valid_status_codes.Contains(statusCode) ? "OK" : "HTTP_ERROR";
-                result.code = statusCode.ToString();
-                if (result.status == "OK")
-                    result.error_type = string.Empty;
+                tries++;
+                try
+                {
+                    var attempt = await SendOnce(uri, methodUsed, TimeSpan.FromSeconds(Math.Max(1, config.monitor_settings.timeout)));
+                    swTotal.Stop();
+                    result.duration_ms = swTotal.ElapsedMilliseconds;
+                    result.retries = tries - 1;
+                    result.http_method = attempt.method;
+                    int statusCode = (int)attempt.response.StatusCode;
+                    bool ok = config.monitor_settings.valid_status_codes.Contains(statusCode);
+                    bool warn = !ok && config.monitor_settings.warn_status_codes.Contains(statusCode);
+                    result.code = statusCode.ToString();
+                    if (ok) { result.status = "OK"; result.error_type = string.Empty; }
+                    else if (warn) { result.status = "WARN"; result.error_type = "PARTIAL"; }
+                    else { result.status = "HTTP_ERROR"; result.error_type = "HTTP"; }
+                    attempt.response.Dispose();
+                    return result;
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.MethodNotAllowed || ex.StatusCode == HttpStatusCode.NotImplemented)
+                {
+                    methodUsed = "GET";
+                    if (tries <= attempts) await Task.Delay(Math.Min(delays[Math.Min(tries - 1, delays.Length - 1)], 2000));
+                    lastEx = ex;
+                }
+                catch (TaskCanceledException ex)
+                {
+                    lastEx = ex;
+                    if (tries >= attempts) break;
+                    await Task.Delay(Math.Min(delays[Math.Min(tries - 1, delays.Length - 1)], 2000));
+                }
+                catch (HttpRequestException ex)
+                {
+                    lastEx = ex;
+                    if (IsTransientStatus(ex.StatusCode))
+                    {
+                        if (tries >= attempts) break;
+                        await Task.Delay(Math.Min(delays[Math.Min(tries - 1, delays.Length - 1)], 2000));
+                    }
+                    else break;
+                }
+                catch (AuthenticationException ex) { lastEx = ex; break; }
+                catch (Exception ex)
+                {
+                    lastEx = ex;
+                    if (tries >= attempts) break;
+                    await Task.Delay(Math.Min(delays[Math.Min(tries - 1, delays.Length - 1)], 2000));
+                }
             }
-            catch (TaskCanceledException)
+            swTotal.Stop();
+            result.duration_ms = swTotal.ElapsedMilliseconds;
+            result.retries = Math.Max(0, tries - 1);
+            result.http_method = methodUsed;
+            if (lastEx is AuthenticationException || (lastEx is HttpRequestException hre && hre.InnerException is AuthenticationException))
             {
-                result.status = "TIMEOUT";
-                result.code = "T/O";
-                result.error_type = "TIMEOUT";
+                result.status = "SSL_ERROR"; result.code = "SSL"; result.error_type = "SSL";
             }
-            catch (HttpRequestException ex) when (ex.InnerException is AuthenticationException)
+            else if (lastEx is TaskCanceledException)
             {
-                result.status = "SSL_ERROR";
-                result.code = "SSL";
-                result.error_type = "SSL";
+                result.status = "TIMEOUT"; result.code = "T/O"; result.error_type = "TIMEOUT";
             }
-            catch
+            else if (lastEx is HttpRequestException ex && (ex.StatusCode == HttpStatusCode.Redirect || ex.StatusCode == HttpStatusCode.RedirectKeepVerb || ex.StatusCode == HttpStatusCode.RedirectMethod))
             {
-                result.status = "CONN_ERROR";
-                result.code = "ERR";
-                result.error_type = "NETWORK";
+                result.status = "REDIRECT_LOOP"; result.code = "3xx"; result.error_type = "REDIRECT";
+            }
+            else
+            {
+                result.status = "CONN_ERROR"; result.code = "ERR"; result.error_type = "NETWORK";
             }
             return result;
         }
-
+        static bool IsTransientStatus(HttpStatusCode? sc)
+        {
+            if (!sc.HasValue) return true;
+            int s = (int)sc.Value;
+            if (s == 408 || s == 425 || s == 429) return true;
+            if (s >= 500 && s <= 504) return true;
+            return false;
+        }
+        static async Task<(HttpResponseMessage response, string method)> SendOnce(Uri uri, string methodPreference, TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            if (methodPreference == "HEAD")
+            {
+                using var reqH = new HttpRequestMessage(HttpMethod.Head, uri);
+                reqH.Version = new Version(2, 0);
+                reqH.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+                var respH = await client.SendAsync(reqH, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                return (respH, "HEAD");
+            }
+            else
+            {
+                using var reqG = new HttpRequestMessage(HttpMethod.Get, uri);
+                reqG.Version = new Version(2, 0);
+                reqG.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+                var respG = await client.SendAsync(reqG, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                return (respG, "GET");
+            }
+        }
         static void PrintResults(WebsiteResult[] results)
         {
-            Console.WriteLine(new string('-', Console.WindowWidth));
-            Console.ForegroundColor = ConsoleColor.Magenta;
-            Console.WriteLine("{0,-12} {1,-30} {2,-16} {3,-6} {4,-10}", "Статус", "Сайт", "IP", "Код", "Тип ошибки");
-            Console.ResetColor();
-            Console.WriteLine(new string('-', Console.WindowWidth));
-            int okCount = 0;
+            int w = GetWidth();
+            int statW = 12, ipW = 16, codeW = 6, methodW = 5, retryW = 7, durW = 8;
+            int spaces = 6;
+            int siteW = Math.Max(20, w - (statW + ipW + codeW + methodW + retryW + durW + spaces));
+            SafeWriteLine(new string('-', w));
+            SetColor(ConsoleColor.Magenta);
+            SafeWriteLine(FormatRow7("Статус", statW, "Сайт", siteW, "IP", ipW, "Код", codeW, "Метод", methodW, "Повторы", retryW, "мс", durW));
+            ResetColor();
+            SafeWriteLine(new string('-', w));
+            int avail = 0;
             foreach (var r in results)
             {
-                Console.ForegroundColor = r.status == "OK" ? ConsoleColor.Green : ConsoleColor.Red;
-                Console.Write("{0,-12}", r.status);
-                Console.ResetColor();
-                Console.Write(" {0,-30} {1,-16} {2,-6} ", r.url, r.ip, r.code);
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("{0,-10}", string.IsNullOrEmpty(r.error_type) ? "" : r.error_type);
-                Console.ResetColor();
-                if (r.status == "OK")
-                    okCount++;
+                if (r.status == "OK") SetColor(ConsoleColor.Green);
+                else if (r.status == "WARN") SetColor(ConsoleColor.Yellow);
+                else SetColor(ConsoleColor.Red);
+                SafeWrite(Pad(r.status, statW)); ResetColor(); SafeWrite(" ");
+                SafeWrite(Pad(r.url, siteW)); SafeWrite(" ");
+                SafeWrite(Pad(r.ip, ipW)); SafeWrite(" ");
+                SafeWrite(Pad(r.code, codeW)); SafeWrite(" ");
+                SafeWrite(Pad(r.http_method, methodW)); SafeWrite(" ");
+                SafeWrite(Pad(r.retries.ToString(), retryW)); SafeWrite(" ");
+                if (r.duration_ms < 500) SetColor(ConsoleColor.Green);
+                else if (r.duration_ms <= 2000) SetColor(ConsoleColor.Yellow);
+                else SetColor(ConsoleColor.Red);
+                SafeWriteLine(Pad(r.duration_ms.ToString(), durW)); ResetColor();
+                if (r.status == "OK" || r.status == "WARN") avail++;
             }
-            Console.WriteLine(new string('-', Console.WindowWidth));
-            Console.WriteLine($"Итого доступно: {okCount}/{results.Length} сайтов\n");
+            SafeWriteLine(new string('-', w));
+            SafeWriteLine($"Итого доступно: {avail}/{results.Length} сайтов");
+            SafeWriteLine();
         }
-
-        static Dictionary<string, bool> alertLocked = new Dictionary<string, bool>();
-
         static void PrintUptime(WebsiteResult[] results)
         {
-            int barLength = Math.Max(0, Console.WindowWidth - 46);
+            int barLength = Math.Max(0, GetWidth() - 62);
             foreach (var r in results)
             {
-                double uptimePercent = 0.0;
-                int barCount = 0;
+                double uptimePercent = 0.0; int barCount = 0;
                 if (uptimeHistory.ContainsKey(r.url))
                 {
                     List<bool> history = uptimeHistory[r.url];
@@ -405,45 +449,29 @@ namespace SiteMonitor
                     int dailyCount = dailyHistory.Count();
                     int greenCount = dailyHistory.Count(x => x);
                     uptimePercent = dailyCount > 0 ? (greenCount * 100.0 / dailyCount) : 0.0;
-                    if (!alertLocked.ContainsKey(r.url))
-                        alertLocked[r.url] = false;
+                    if (!alertLocked.ContainsKey(r.url)) alertLocked[r.url] = false;
                     if (history.Count >= 3)
                     {
                         var lastThree = history.Skip(history.Count - 3);
-                        if (!alertLocked[r.url] && lastThree.All(x => !x))
-                            alertLocked[r.url] = true;
-                        else if (alertLocked[r.url] && lastThree.All(x => x))
-                            alertLocked[r.url] = false;
+                        if (!alertLocked[r.url] && lastThree.All(x => !x)) alertLocked[r.url] = true;
+                        else if (alertLocked[r.url] && lastThree.All(x => x)) alertLocked[r.url] = false;
                     }
                     var displayHistory = history.Count > barLength ? history.Skip(history.Count - barLength).ToList() : history;
                     barCount = displayHistory.Count;
-                    Console.ForegroundColor = alertLocked[r.url] ? ConsoleColor.Red : ConsoleColor.Gray;
-                    Console.Write($"{r.url,-35}");
-                    Console.ResetColor();
-                    Console.Write($"{uptimePercent,7:0.00}% ");
-                    foreach (bool stat in displayHistory)
-                    {
-                        Console.ForegroundColor = stat ? ConsoleColor.Green : ConsoleColor.Red;
-                        Console.Write("|");
-                        Console.ResetColor();
-                    }
+                    SetColor(alertLocked[r.url] ? ConsoleColor.Red : ConsoleColor.Gray);
+                    SafeWrite(Pad(r.url, 35)); ResetColor();
+                    SafeWrite($"{uptimePercent,7:0.00}% ");
+                    foreach (bool stat in displayHistory) { SetColor(stat ? ConsoleColor.Green : ConsoleColor.Red); SafeWrite("|"); ResetColor(); }
                 }
                 else
                 {
-                    Console.Write($"{r.url,-35}{uptimePercent,7:0.00}% ");
+                    SafeWrite($"{Pad(r.url, 35)}{uptimePercent,7:0.00}% ");
                 }
                 int remaining = barLength - barCount;
-                if (remaining > 0)
-                {
-                    Console.ForegroundColor = ConsoleColor.Gray;
-                    Console.Write(new string('|', remaining));
-                    Console.ResetColor();
-                }
-                Console.WriteLine();
+                if (remaining > 0) { SetColor(ConsoleColor.Gray); SafeWrite(new string('|', remaining)); ResetColor(); }
+                SafeWriteLine();
             }
         }
-
-
         static async Task LogResults(WebsiteResult[] results)
         {
             try
@@ -452,15 +480,49 @@ namespace SiteMonitor
                 var log = new
                 {
                     timestamp = DateTime.Now.ToString("o"),
-                    results = results.Select(r => new { r.url, r.ip, r.status, r.code })
+                    results = results.Select(r => new { r.url, r.ip, r.status, r.code, r.duration_ms, r.retries, http_method = r.http_method })
                 };
                 string json = JsonSerializer.Serialize(log);
                 await File.AppendAllTextAsync(path, json + Environment.NewLine);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Ошибка логирования: {ex.Message}");
-            }
+            catch (Exception ex) { SafeWriteLine($"Ошибка логирования: {ex.Message}"); }
         }
+        static string CenterInBox(string s, int width)
+        {
+            if (s.Length > width) return s.Substring(0, width);
+            int pad = (width - s.Length) / 2;
+            return new string(' ', pad) + s + new string(' ', width - s.Length - pad);
+        }
+        static string FormatRow7(string a, int aw, string b, int bw, string c, int cw, string d, int dw, string e, int ew, string f, int fw, string g, int gw)
+        {
+            return $"{Pad(a, aw)} {Pad(b, bw)} {Pad(c, cw)} {Pad(d, dw)} {Pad(e, ew)} {Pad(f, fw)} {Pad(g, gw)}";
+        }
+        static int GetWidth() { try { return Math.Max(50, Console.WindowWidth); } catch { return 100; } }
+        static int GetHeight() { try { return Math.Max(10, Console.WindowHeight); } catch { return 30; } }
+        static int GetCursorTop() { try { return Console.CursorTop; } catch { return 0; } }
+        static void SafeClear() { try { Console.Clear(); } catch { } }
+        static void SafeWrite(string s) { try { Console.Write(s); } catch { } }
+        static void SafeWriteLine(string? s = "") { try { Console.WriteLine(s); } catch { } }
+        static void SetColor(ConsoleColor c) { try { Console.ForegroundColor = c; } catch { } }
+        static void ResetColor() { try { Console.ResetColor(); } catch { } }
+        static void WriteCentered(string text, ConsoleColor? color)
+        {
+            int width = GetWidth();
+            if (color.HasValue) SetColor(color.Value);
+            SafeWriteLine(text.PadLeft((width + text.Length) / 2));
+            if (color.HasValue) ResetColor();
+        }
+        static void SafeSetCursorPosition(int left, int top)
+        {
+            try
+            {
+                left = Math.Max(0, Math.Min(left, Math.Max(0, GetWidth() - 1)));
+                top = Math.Max(0, top);
+                Console.SetCursorPosition(left, top);
+            }
+            catch { }
+        }
+        static bool ConsoleIsInteractive() { try { _ = Console.KeyAvailable; return true; } catch { return false; } }
+        static string Pad(string s, int len) { if (s.Length > len) return s.Substring(0, Math.Max(0, len)); return s.PadRight(len); }
     }
 }
