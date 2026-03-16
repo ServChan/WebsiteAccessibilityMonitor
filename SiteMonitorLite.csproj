@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove="ProgramLite.cs" />
+    <Compile Remove="Program.cs" />
   </ItemGroup>
   <ItemGroup Condition="Exists('config.json')">
     <None Include="config.json" CopyToOutputDirectory="PreserveNewest" />
