@@ -1,6 +1,6 @@
 # Build output
-[Bb]in/
-[Oo]bj/
+/[Bb]in/
+/[Oo]bj/
 
 # User-specific files
 *.user
@@ -24,3 +24,8 @@ Desktop.ini
 # Local runtime data
 config.json
 uptime_history.json
+
+
+# Added by cargo
+
+/target

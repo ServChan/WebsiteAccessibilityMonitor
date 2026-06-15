@@ -1,0 +1,26 @@
+[package]
+name = "website_accessibility_monitor"
+version = "2.0.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "brotli", "gzip", "deflate"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+crossterm = { version = "0.28", features = ["event-stream"] }
+csv = "1.3"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+native-tls = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+winping = "0.10"
+
+[[bin]]
+name = "SiteMonitor"
+path = "src/bin/sitemonitor.rs"
+
+[[bin]]
+name = "SiteMonitorLite"
+path = "src/bin/sitemonitor_lite.rs"
