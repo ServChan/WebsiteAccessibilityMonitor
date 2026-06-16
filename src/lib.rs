@@ -31,6 +31,10 @@ pub struct MonitorSettings {
     pub use_head_first: bool,
     #[serde(default = "default_proxy_url")]
     pub proxy_url: String,
+    #[serde(default = "default_proxy_username")]
+    pub proxy_username: String,
+    #[serde(default = "default_proxy_password")]
+    pub proxy_password: String,
     #[serde(default = "default_doh_server")]
     pub doh_server: String,
 }
@@ -45,6 +49,8 @@ fn default_ping_enabled() -> bool { true }
 fn default_uptime_enabled() -> bool { false }
 fn default_use_head_first() -> bool { true }
 fn default_proxy_url() -> String { "".to_string() }
+fn default_proxy_username() -> String { "".to_string() }
+fn default_proxy_password() -> String { "".to_string() }
 fn default_doh_server() -> String { "https://cloudflare-dns.com/dns-query".to_string() }
 
 impl Default for MonitorSettings {
@@ -60,6 +66,8 @@ impl Default for MonitorSettings {
             uptime_enabled: default_uptime_enabled(),
             use_head_first: default_use_head_first(),
             proxy_url: default_proxy_url(),
+            proxy_username: default_proxy_username(),
+            proxy_password: default_proxy_password(),
             doh_server: default_doh_server(),
         }
     }
@@ -296,6 +304,39 @@ pub fn get_default_config() -> Config {
             "https://reddit.com".to_string(),
             "https://wikipedia.org".to_string(),
             "https://x.com".to_string(),
+            "https://www.gosuslugi.ru/".to_string(),
+            "https://www.gov.ru/".to_string(),
+            "https://www.mos.ru/".to_string(),
+            "https://rkn.gov.ru/".to_string(),
+            "https://www.nalog.gov.ru/".to_string(),
+            "https://yandex.ru/maps/".to_string(),
+            "https://www.kinopoisk.ru/".to_string(),
+            "https://www.sberbank.ru/".to_string(),
+            "https://www.vtb.ru/".to_string(),
+            "https://alfabank.ru/".to_string(),
+            "https://ok.ru/".to_string(),
+            "https://www.ozon.ru/".to_string(),
+            "https://www.wildberries.ru/".to_string(),
+            "https://www.avito.ru/".to_string(),
+            "https://lenta.ru/".to_string(),
+            "https://www.rbc.ru/".to_string(),
+            "https://tass.ru/".to_string(),
+            "https://rutube.ru/".to_string(),
+            "https://dzen.ru/".to_string(),
+            "https://www.instagram.com/".to_string(),
+            "https://www.facebook.com/".to_string(),
+            "https://www.linkedin.com/".to_string(),
+            "https://discord.com/".to_string(),
+            "https://www.dailymotion.com/".to_string(),
+            "https://soap2day.day/".to_string(),
+            "https://rutracker.org/".to_string(),
+            "https://www.torproject.org/".to_string(),
+            "https://protonvpn.com/".to_string(),
+            "https://www.deepl.com/".to_string(),
+            "https://www.patreon.com/".to_string(),
+            "https://www.bbc.com/russian".to_string(),
+            "https://meduza.io/".to_string(),
+            "https://www.dw.com/ru/".to_string(),
         ],
         monitor: MonitorConfig::default(),
         webhooks: WebhookSettings::default(),
@@ -461,7 +502,12 @@ pub async fn resolve_system_all(host: &str) -> Vec<String> {
     ips
 }
 
-pub fn build_proxied_client(proxy_url: &str, timeout_secs: u64) -> Result<reqwest::Client, reqwest::Error> {
+pub fn build_proxied_client(
+    proxy_url: &str,
+    proxy_username: &str,
+    proxy_password: &str,
+    timeout_secs: u64,
+) -> Result<reqwest::Client, reqwest::Error> {
     let timeout = Duration::from_secs(timeout_secs.max(1));
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)
@@ -470,6 +516,16 @@ pub fn build_proxied_client(proxy_url: &str, timeout_secs: u64) -> Result<reqwes
     
     if !proxy_url.trim().is_empty() {
         if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+            let mut proxy = proxy;
+            if !proxy_username.is_empty() {
+                proxy = proxy.basic_auth(proxy_username, proxy_password);
+            } else if let Ok(url) = reqwest::Url::parse(proxy_url) {
+                let username = url.username();
+                let password = url.password();
+                if !username.is_empty() {
+                    proxy = proxy.basic_auth(username, password.unwrap_or(""));
+                }
+            }
             builder = builder.proxy(proxy);
         }
     }
@@ -482,9 +538,11 @@ pub async fn resolve_doh_all(
     doh_server: &str,
     timeout_duration: Duration,
     proxy_url: &str,
+    proxy_username: &str,
+    proxy_password: &str,
 ) -> Vec<String> {
     let doh_client = if !proxy_url.trim().is_empty() {
-        build_proxied_client(proxy_url, timeout_duration.as_secs()).unwrap_or_else(|_| client.clone())
+        build_proxied_client(proxy_url, proxy_username, proxy_password, timeout_duration.as_secs()).unwrap_or_else(|_| client.clone())
     } else {
         client.clone()
     };
@@ -667,7 +725,15 @@ pub async fn check_website_async(
     // 1. Parallel DNS (System vs DoH) to detect DNS hijacking/poisoning
     let doh_timeout = Duration::from_secs(config.monitor_settings.timeout.max(1));
     let sys_dns_task = resolve_system_all(host);
-    let doh_dns_task = resolve_doh_all(client, host, &config.monitor_settings.doh_server, doh_timeout, &config.monitor_settings.proxy_url);
+    let doh_dns_task = resolve_doh_all(
+        client,
+        host,
+        &config.monitor_settings.doh_server,
+        doh_timeout,
+        &config.monitor_settings.proxy_url,
+        &config.monitor_settings.proxy_username,
+        &config.monitor_settings.proxy_password,
+    );
     let (sys_ips, doh_ips) = tokio::join!(sys_dns_task, doh_dns_task);
 
     // If system DNS fails completely but DoH succeeds, it is DNS poisoning block
@@ -678,7 +744,12 @@ pub async fn check_website_async(
         
         // Attempt proxy fallback check
         if !config.monitor_settings.proxy_url.trim().is_empty() {
-            if let Ok(proxied_client) = build_proxied_client(&config.monitor_settings.proxy_url, config.monitor_settings.timeout) {
+            if let Ok(proxied_client) = build_proxied_client(
+                &config.monitor_settings.proxy_url,
+                &config.monitor_settings.proxy_username,
+                &config.monitor_settings.proxy_password,
+                config.monitor_settings.timeout,
+            ) {
                 if let Ok(resp) = proxied_client.get(parsed_url.clone()).send().await {
                     let status_code = resp.status().as_u16() as i32;
                     let is_ok = config.monitor_settings.valid_status_codes.contains(&status_code);
@@ -770,7 +841,12 @@ pub async fn check_website_async(
                     
                     // Attempt proxy fallback check
                     if !config.monitor_settings.proxy_url.trim().is_empty() {
-                        if let Ok(proxied_client) = build_proxied_client(&config.monitor_settings.proxy_url, config.monitor_settings.timeout) {
+                        if let Ok(proxied_client) = build_proxied_client(
+                            &config.monitor_settings.proxy_url,
+                            &config.monitor_settings.proxy_username,
+                            &config.monitor_settings.proxy_password,
+                            config.monitor_settings.timeout,
+                        ) {
                             if let Ok(resp) = proxied_client.get(parsed_url.clone()).send().await {
                                 let status_code = resp.status().as_u16() as i32;
                                 let is_ok = config.monitor_settings.valid_status_codes.contains(&status_code);
@@ -793,7 +869,12 @@ pub async fn check_website_async(
                         
                         // Attempt proxy fallback check
                         if !config.monitor_settings.proxy_url.trim().is_empty() {
-                            if let Ok(proxied_client) = build_proxied_client(&config.monitor_settings.proxy_url, config.monitor_settings.timeout) {
+                            if let Ok(proxied_client) = build_proxied_client(
+                                &config.monitor_settings.proxy_url,
+                                &config.monitor_settings.proxy_username,
+                                &config.monitor_settings.proxy_password,
+                                config.monitor_settings.timeout,
+                            ) {
                                 if let Ok(resp) = proxied_client.get(parsed_url.clone()).send().await {
                                     let status_code = resp.status().as_u16() as i32;
                                     let is_ok = config.monitor_settings.valid_status_codes.contains(&status_code);
@@ -917,7 +998,12 @@ pub async fn check_website_async(
 
     // If blocked, check if it can be bypassed via proxy
     if result.status != "OK" && result.status != "WARN" && !config.monitor_settings.proxy_url.trim().is_empty() {
-        if let Ok(proxied_client) = build_proxied_client(&config.monitor_settings.proxy_url, config.monitor_settings.timeout) {
+        if let Ok(proxied_client) = build_proxied_client(
+            &config.monitor_settings.proxy_url,
+            &config.monitor_settings.proxy_username,
+            &config.monitor_settings.proxy_password,
+            config.monitor_settings.timeout,
+        ) {
             let method = if method_used == "HEAD" {
                 reqwest::Method::HEAD
             } else {

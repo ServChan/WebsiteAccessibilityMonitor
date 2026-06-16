@@ -249,7 +249,7 @@ fn print_system_info(config: &Config, resolved_count: usize, current_sort_mode: 
     reset_color();
 }
 
-fn print_results(results: &[WebsiteResult], theme: &HashMap<&str, Color>, current_sort_mode: &str) {
+fn print_results(results: &[WebsiteResult], theme: &HashMap<&str, Color>, current_sort_mode: &str, scroll_offset: &mut usize, uptime_enabled: bool) {
     let w = get_width() as usize;
     let has_groups = results.iter().any(|r| !r.group_name.is_empty());
     
@@ -387,11 +387,23 @@ fn print_results(results: &[WebsiteResult], theme: &HashMap<&str, Color>, curren
     if h_term < 22 { overhead -= 2; } // system info compact
     if h_term < 18 { overhead -= 2; } // system info hidden
     if h_term < 16 { overhead -= 2; } // last check hidden
-    if h_term >= 32 { overhead += 5 + results.len(); } // uptime table overhead (approximate)
+    
+    let available_height = h_term.saturating_sub(overhead).max(6);
+    let display_count = if uptime_enabled && h_term >= 32 {
+        (available_height.saturating_sub(15) / 2).max(3)
+    } else {
+        available_height.saturating_sub(6).max(3)
+    };
 
-    let max_rows = h_term.saturating_sub(overhead).max(3);
     let total_count = results.len();
-    let display_count = total_count.min(max_rows);
+    let display_count = display_count.min(total_count);
+    
+    // Clamp scroll_offset
+    let max_scroll = total_count.saturating_sub(display_count);
+    *scroll_offset = (*scroll_offset).min(max_scroll);
+    
+    let start_idx = *scroll_offset;
+    let end_idx = (start_idx + display_count).min(total_count);
     let hidden_count = total_count.saturating_sub(display_count);
 
     // Data rows
@@ -401,7 +413,7 @@ fn print_results(results: &[WebsiteResult], theme: &HashMap<&str, Color>, curren
             avail += 1;
         }
 
-        if idx >= display_count {
+        if idx < start_idx || idx >= end_idx {
             continue;
         }
 
@@ -467,7 +479,7 @@ fn print_results(results: &[WebsiteResult], theme: &HashMap<&str, Color>, curren
     }
 
     if hidden_count > 0 {
-        let msg = format!(" ... и еще {} сайтов скрыто (увеличьте высоту окна)", hidden_count);
+        let msg = format!(" ... и еще {} сайтов скрыто (листайте стрелками ▲/▼)", hidden_count);
         if has_groups {
             let merged_width = site_w + group_w + ip_w + code_w + method_w + retry_w + dur_w + 6;
             write_table_row(&[
@@ -514,6 +526,8 @@ fn print_uptime(
     uptime_history: &HashMap<String, Vec<bool>>,
     alert_locked: &HashMap<String, bool>,
     theme: &HashMap<&str, Color>,
+    scroll_offset: usize,
+    display_count: usize,
 ) {
     let w = get_width() as usize;
     let url_w = 30;
@@ -538,7 +552,11 @@ fn print_uptime(
 
     set_color(Color::DarkCyan); safe_write_line(&hdr_line); reset_color();
 
-    for r in results {
+    let start_idx = scroll_offset;
+    let end_idx = (start_idx + display_count).min(results.len());
+
+    for idx in start_idx..end_idx {
+        let r = &results[idx];
         set_color(Color::DarkCyan); safe_write("│"); reset_color();
         if let Some(history) = uptime_history.get(&r.url) {
             let daily_history = if history.len() > 1440 {
@@ -722,7 +740,14 @@ fn draw_settings_screen(
         "Telegram Bot Token",
         "Telegram Chat ID",
         "Прокси сервер (Proxy URL)",
+        "Прокси Пользователь",
+        "Прокси Пароль",
         "DoH Сервер (DNS-over-HTTPS)",
+        "Discord Webhook URL",
+        "Slack Webhook URL",
+        "Алерт при падении (ВКЛ/ВЫКЛ)",
+        "Алерт при восст. (ВКЛ/ВЫКЛ)",
+        "Порог падений до алерта",
     ];
 
     let visible_height = h.saturating_sub(10).max(1);
@@ -827,7 +852,69 @@ fn draw_settings_screen(
                 if is_active && is_editing {
                     format!("[ {}_ ]", edit_buffer)
                 } else {
+                    let u = &config.monitor_settings.proxy_username;
+                    if u.is_empty() { "[ <не задан> ]".to_string() } else { format!("[ {} ]", u) }
+                }
+            }
+            15 => {
+                if is_active && is_editing {
+                    format!("[ {}_ ]", edit_buffer)
+                } else {
+                    let p = &config.monitor_settings.proxy_password;
+                    if p.is_empty() {
+                        "[ <не задан> ]".to_string()
+                    } else {
+                        "[ ******** ]".to_string()
+                    }
+                }
+            }
+            16 => {
+                if is_active && is_editing {
+                    format!("[ {}_ ]", edit_buffer)
+                } else {
                     format!("[ {} ]", config.monitor_settings.doh_server)
+                }
+            }
+            17 => {
+                if is_active && is_editing {
+                    format!("[ {}_ ]", edit_buffer)
+                } else {
+                    let url = &config.webhooks.discord_webhook_url;
+                    if url.is_empty() {
+                        "[ <не задан> ]".to_string()
+                    } else if url.len() > 8 {
+                        format!("[ {}...{} ]", &url[..4], &url[url.len()-4..])
+                    } else {
+                        "[ ******** ]".to_string()
+                    }
+                }
+            }
+            18 => {
+                if is_active && is_editing {
+                    format!("[ {}_ ]", edit_buffer)
+                } else {
+                    let url = &config.webhooks.slack_webhook_url;
+                    if url.is_empty() {
+                        "[ <не задан> ]".to_string()
+                    } else if url.len() > 8 {
+                        format!("[ {}...{} ]", &url[..4], &url[url.len()-4..])
+                    } else {
+                        "[ ******** ]".to_string()
+                    }
+                }
+            }
+            19 => {
+                if config.webhooks.notify_on_down { "[  ВКЛ   ]".to_string() } else { "[  ВЫКЛ  ]".to_string() }
+            }
+            20 => {
+                if config.webhooks.notify_on_recovery { "[  ВКЛ   ]".to_string() } else { "[  ВЫКЛ  ]".to_string() }
+            }
+            21 => {
+                if is_active && is_editing {
+                    format!("[ {}_ ]", edit_buffer)
+                } else {
+                    let val = config.webhooks.min_failures_before_alert;
+                    format!("< {:>4} >", val)
                 }
             }
             _ => "".to_string(),
@@ -845,7 +932,7 @@ fn draw_settings_screen(
             safe_write(&val_padded);
         } else {
             match idx {
-                3 | 4 | 5 | 6 | 8 | 10 => {
+                3 | 4 | 5 | 6 | 8 | 10 | 19 | 20 => {
                     let val = match idx {
                         3 => config.monitor_settings.ping_enabled,
                         4 => config.monitor_settings.uptime_enabled,
@@ -853,6 +940,8 @@ fn draw_settings_screen(
                         6 => config.monitor.logging_enabled,
                         8 => config.csv_export.enabled,
                         10 => config.webhooks.enabled,
+                        19 => config.webhooks.notify_on_down,
+                        20 => config.webhooks.notify_on_recovery,
                         _ => false,
                     };
                     if val {
@@ -901,11 +990,18 @@ fn draw_settings_screen(
         7 => "Имя или абсолютный путь к текстовому файлу логов.",
         8 => "Экспортировать результаты проверок в CSV-таблицу после каждого цикла.",
         9 => "Имя или абсолютный путь к экспортируемому CSV-файлу.",
-        10 => "Отправка уведомлений о сбоях/восстановлении в Telegram.",
+        10 => "Отправка уведомлений о сбоях/восстановлении в Telegram/Discord/Slack.",
         11 => "Токен вашего Telegram-бота, полученный от @BotFather.",
         12 => "ID чата или канала для отправки уведомлений Telegram.",
         13 => "URL-адрес HTTP/SOCKS5 прокси-сервера (например: http://127.0.0.1:8080).",
-        14 => "Адрес DNS-over-HTTPS (DoH) сервера для разрешения имен хостов.",
+        14 => "Имя пользователя для авторизации на прокси-сервере (если требуется).",
+        15 => "Пароль для авторизации на прокси-сервере (если требуется).",
+        16 => "Адрес DNS-over-HTTPS (DoH) сервера для разрешения имен хостов.",
+        17 => "URL-адрес Discord Webhook для отправки уведомлений.",
+        18 => "URL-адрес Slack Webhook для отправки уведомлений.",
+        19 => "Отправлять уведомления, когда сайт становится недоступен.",
+        20 => "Отправлять уведомления, когда сайт восстанавливает доступность.",
+        21 => "Число неудачных проверок подряд до отправки алерта (по умолчанию: 3).",
         _ => "",
     };
 
@@ -930,10 +1026,7 @@ fn draw_settings_screen(
 
     for i in 0..2 {
         set_color(*theme.get("banner").unwrap_or(&Color::Cyan));
-        safe_write("│ ");
-        reset_color();
-
-        if i < lines.len() {
+                if i < lines.len() {
             set_color(Color::White);
             safe_write(&pad(&lines[i], desc_w));
         } else {
@@ -994,7 +1087,8 @@ async fn show_settings_menu(
     let mut scroll_offset = 0;
     let mut is_editing = false;
     let mut edit_buffer = String::new();
-    let num_items = 15;
+    let num_items = 22;
+    let mut need_redraw = true;
 
     loop {
         let h = get_height() as usize;
@@ -1002,129 +1096,178 @@ async fn show_settings_menu(
 
         if active_idx < scroll_offset {
             scroll_offset = active_idx;
+            need_redraw = true;
         } else if active_idx >= scroll_offset + visible_height {
             scroll_offset = active_idx - visible_height + 1;
+            need_redraw = true;
         }
 
-        draw_settings_screen(config, active_idx, scroll_offset, is_editing, &edit_buffer, theme);
+        if need_redraw {
+            draw_settings_screen(config, active_idx, scroll_offset, is_editing, &edit_buffer, theme);
+            need_redraw = false;
+        }
 
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != event::KeyEventKind::Release {
-                    if is_editing {
-                        match key.code {
-                            KeyCode::Enter => {
-                                match active_idx {
-                                    7 => config.monitor.log_file_path = edit_buffer.clone(),
-                                    9 => config.csv_export.file_path = edit_buffer.clone(),
-                                    11 => config.webhooks.telegram_bot_token = edit_buffer.clone(),
-                                    12 => config.webhooks.telegram_chat_id = edit_buffer.clone(),
-                                    13 => config.monitor_settings.proxy_url = edit_buffer.clone(),
-                                    14 => config.monitor_settings.doh_server = edit_buffer.clone(),
-                                    _ => {}
-                                }
-                                is_editing = false;
-                            }
-                            KeyCode::Esc => {
-                                is_editing = false;
-                            }
-                            KeyCode::Backspace => {
-                                edit_buffer.pop();
-                            }
-                            KeyCode::Char(c) => {
-                                if edit_buffer.chars().count() < 60 {
-                                    edit_buffer.push(c);
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match key.code {
-                            KeyCode::Up => {
-                                if active_idx > 0 {
-                                    active_idx -= 1;
-                                }
-                            }
-                            KeyCode::Down => {
-                                if active_idx < num_items - 1 {
-                                    active_idx += 1;
-                                }
-                            }
-                            KeyCode::Left => {
-                                match active_idx {
-                                    0 => config.monitor_settings.interval = config.monitor_settings.interval.saturating_sub(5).max(1),
-                                    1 => config.monitor_settings.timeout = config.monitor_settings.timeout.saturating_sub(1).max(1),
-                                    2 => config.monitor_settings.retries_max = config.monitor_settings.retries_max.saturating_sub(1),
-                                    3 => config.monitor_settings.ping_enabled = !config.monitor_settings.ping_enabled,
-                                    4 => config.monitor_settings.uptime_enabled = !config.monitor_settings.uptime_enabled,
-                                    5 => config.monitor_settings.use_head_first = !config.monitor_settings.use_head_first,
-                                    6 => config.monitor.logging_enabled = !config.monitor.logging_enabled,
-                                    8 => config.csv_export.enabled = !config.csv_export.enabled,
-                                    10 => config.webhooks.enabled = !config.webhooks.enabled,
-                                    _ => {}
-                                }
-                            }
-                            KeyCode::Right => {
-                                match active_idx {
-                                    0 => config.monitor_settings.interval = config.monitor_settings.interval.saturating_add(5).min(86400),
-                                    1 => config.monitor_settings.timeout = config.monitor_settings.timeout.saturating_add(1).min(300),
-                                    2 => config.monitor_settings.retries_max = config.monitor_settings.retries_max.saturating_add(1).min(5),
-                                    3 => config.monitor_settings.ping_enabled = !config.monitor_settings.ping_enabled,
-                                    4 => config.monitor_settings.uptime_enabled = !config.monitor_settings.uptime_enabled,
-                                    5 => config.monitor_settings.use_head_first = !config.monitor_settings.use_head_first,
-                                    6 => config.monitor.logging_enabled = !config.monitor.logging_enabled,
-                                    8 => config.csv_export.enabled = !config.csv_export.enabled,
-                                    10 => config.webhooks.enabled = !config.webhooks.enabled,
-                                    _ => {}
-                                }
-                            }
-                            KeyCode::Enter => {
-                                match active_idx {
-                                    3 => config.monitor_settings.ping_enabled = !config.monitor_settings.ping_enabled,
-                                    4 => config.monitor_settings.uptime_enabled = !config.monitor_settings.uptime_enabled,
-                                    5 => config.monitor_settings.use_head_first = !config.monitor_settings.use_head_first,
-                                    6 => config.monitor.logging_enabled = !config.monitor.logging_enabled,
-                                    8 => config.csv_export.enabled = !config.csv_export.enabled,
-                                    10 => config.webhooks.enabled = !config.webhooks.enabled,
-                                    7 => {
-                                        is_editing = true;
-                                        edit_buffer = config.monitor.log_file_path.clone();
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != event::KeyEventKind::Release {
+                        need_redraw = true;
+                        if is_editing {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    match active_idx {
+                                        7 => config.monitor.log_file_path = edit_buffer.clone(),
+                                        9 => config.csv_export.file_path = edit_buffer.clone(),
+                                        11 => config.webhooks.telegram_bot_token = edit_buffer.clone(),
+                                        12 => config.webhooks.telegram_chat_id = edit_buffer.clone(),
+                                        13 => config.monitor_settings.proxy_url = edit_buffer.clone(),
+                                        14 => config.monitor_settings.proxy_username = edit_buffer.clone(),
+                                        15 => config.monitor_settings.proxy_password = edit_buffer.clone(),
+                                        16 => config.monitor_settings.doh_server = edit_buffer.clone(),
+                                        17 => config.webhooks.discord_webhook_url = edit_buffer.clone(),
+                                        18 => config.webhooks.slack_webhook_url = edit_buffer.clone(),
+                                        21 => {
+                                            if let Ok(val) = edit_buffer.trim().parse::<u32>() {
+                                                config.webhooks.min_failures_before_alert = val.clamp(1, 20);
+                                            }
+                                        }
+                                        _ => {}
                                     }
-                                    9 => {
-                                        is_editing = true;
-                                        edit_buffer = config.csv_export.file_path.clone();
-                                    }
-                                    11 => {
-                                        is_editing = true;
-                                        edit_buffer = config.webhooks.telegram_bot_token.clone();
-                                    }
-                                    12 => {
-                                        is_editing = true;
-                                        edit_buffer = config.webhooks.telegram_chat_id.clone();
-                                    }
-                                    13 => {
-                                        is_editing = true;
-                                        edit_buffer = config.monitor_settings.proxy_url.clone();
-                                    }
-                                    14 => {
-                                        is_editing = true;
-                                        edit_buffer = config.monitor_settings.doh_server.clone();
-                                    }
-                                    _ => {}
+                                    is_editing = false;
                                 }
+                                KeyCode::Esc => {
+                                    is_editing = false;
+                                }
+                                KeyCode::Backspace => {
+                                    edit_buffer.pop();
+                                }
+                                KeyCode::Char(c) => {
+                                    if edit_buffer.chars().count() < 60 {
+                                        edit_buffer.push(c);
+                                    }
+                                }
+                                _ => {}
                             }
-                            KeyCode::Char('o') | KeyCode::Char('O') => {
-                                save_config(config, config_path);
-                                return Ok(true);
+                        } else {
+                            match key.code {
+                                KeyCode::Up => {
+                                    if active_idx > 0 {
+                                        active_idx -= 1;
+                                    }
+                                }
+                                KeyCode::Down => {
+                                    if active_idx < num_items - 1 {
+                                        active_idx += 1;
+                                    }
+                                }
+                                KeyCode::Left => {
+                                    match active_idx {
+                                        0 => config.monitor_settings.interval = config.monitor_settings.interval.saturating_sub(5).max(1),
+                                        1 => config.monitor_settings.timeout = config.monitor_settings.timeout.saturating_sub(1).max(1),
+                                        2 => config.monitor_settings.retries_max = config.monitor_settings.retries_max.saturating_sub(1),
+                                        3 => config.monitor_settings.ping_enabled = !config.monitor_settings.ping_enabled,
+                                        4 => config.monitor_settings.uptime_enabled = !config.monitor_settings.uptime_enabled,
+                                        5 => config.monitor_settings.use_head_first = !config.monitor_settings.use_head_first,
+                                        6 => config.monitor.logging_enabled = !config.monitor.logging_enabled,
+                                        8 => config.csv_export.enabled = !config.csv_export.enabled,
+                                        10 => config.webhooks.enabled = !config.webhooks.enabled,
+                                        19 => config.webhooks.notify_on_down = !config.webhooks.notify_on_down,
+                                        20 => config.webhooks.notify_on_recovery = !config.webhooks.notify_on_recovery,
+                                        21 => config.webhooks.min_failures_before_alert = config.webhooks.min_failures_before_alert.saturating_sub(1).max(1),
+                                        _ => {}
+                                    }
+                                }
+                                KeyCode::Right => {
+                                    match active_idx {
+                                        0 => config.monitor_settings.interval = config.monitor_settings.interval.saturating_add(5).min(86400),
+                                        1 => config.monitor_settings.timeout = config.monitor_settings.timeout.saturating_add(1).min(300),
+                                        2 => config.monitor_settings.retries_max = config.monitor_settings.retries_max.saturating_add(1).min(5),
+                                        3 => config.monitor_settings.ping_enabled = !config.monitor_settings.ping_enabled,
+                                        4 => config.monitor_settings.uptime_enabled = !config.monitor_settings.uptime_enabled,
+                                        5 => config.monitor_settings.use_head_first = !config.monitor_settings.use_head_first,
+                                        6 => config.monitor.logging_enabled = !config.monitor.logging_enabled,
+                                        8 => config.csv_export.enabled = !config.csv_export.enabled,
+                                        10 => config.webhooks.enabled = !config.webhooks.enabled,
+                                        19 => config.webhooks.notify_on_down = !config.webhooks.notify_on_down,
+                                        20 => config.webhooks.notify_on_recovery = !config.webhooks.notify_on_recovery,
+                                        21 => config.webhooks.min_failures_before_alert = config.webhooks.min_failures_before_alert.saturating_add(1).min(20),
+                                        _ => {}
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    match active_idx {
+                                        3 => config.monitor_settings.ping_enabled = !config.monitor_settings.ping_enabled,
+                                        4 => config.monitor_settings.uptime_enabled = !config.monitor_settings.uptime_enabled,
+                                        5 => config.monitor_settings.use_head_first = !config.monitor_settings.use_head_first,
+                                        6 => config.monitor.logging_enabled = !config.monitor.logging_enabled,
+                                        8 => config.csv_export.enabled = !config.csv_export.enabled,
+                                        10 => config.webhooks.enabled = !config.webhooks.enabled,
+                                        19 => config.webhooks.notify_on_down = !config.webhooks.notify_on_down,
+                                        20 => config.webhooks.notify_on_recovery = !config.webhooks.notify_on_recovery,
+                                        7 => {
+                                            is_editing = true;
+                                            edit_buffer = config.monitor.log_file_path.clone();
+                                        }
+                                        9 => {
+                                            is_editing = true;
+                                            edit_buffer = config.csv_export.file_path.clone();
+                                        }
+                                        11 => {
+                                            is_editing = true;
+                                            edit_buffer = config.webhooks.telegram_bot_token.clone();
+                                        }
+                                        12 => {
+                                            is_editing = true;
+                                            edit_buffer = config.webhooks.telegram_chat_id.clone();
+                                        }
+                                        13 => {
+                                            is_editing = true;
+                                            edit_buffer = config.monitor_settings.proxy_url.clone();
+                                        }
+                                        14 => {
+                                            is_editing = true;
+                                            edit_buffer = config.monitor_settings.proxy_username.clone();
+                                        }
+                                        15 => {
+                                            is_editing = true;
+                                            edit_buffer = config.monitor_settings.proxy_password.clone();
+                                        }
+                                        16 => {
+                                            is_editing = true;
+                                            edit_buffer = config.monitor_settings.doh_server.clone();
+                                        }
+                                        17 => {
+                                            is_editing = true;
+                                            edit_buffer = config.webhooks.discord_webhook_url.clone();
+                                        }
+                                        18 => {
+                                            is_editing = true;
+                                            edit_buffer = config.webhooks.slack_webhook_url.clone();
+                                        }
+                                        21 => {
+                                            is_editing = true;
+                                            edit_buffer = config.webhooks.min_failures_before_alert.to_string();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                KeyCode::Char('o') | KeyCode::Char('O') => {
+                                    save_config(config, config_path);
+                                    return Ok(true);
+                                }
+                                KeyCode::Esc => {
+                                    *config = load_or_create_config(config_path);
+                                    return Ok(false);
+                                }
+                                _ => {}
                             }
-                            KeyCode::Esc => {
-                                *config = load_or_create_config(config_path);
-                                return Ok(false);
-                            }
-                            _ => {}
                         }
                     }
                 }
+                Event::Resize(_, _) => {
+                    need_redraw = true;
+                }
+                _ => {}
             }
         }
     }
@@ -1169,6 +1312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_check_time = Local::now();
     let mut resolved_sites_len = 0;
     let mut config_reloaded = false;
+    let mut main_scroll_offset = 0;
 
     // Enable crossterm Raw Mode for key handling with guard
     let _raw_mode_guard = RawModeGuard::new();
@@ -1421,7 +1565,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             safe_write_line("");
         }
 
-        print_results(&results, &theme, &current_sort_mode);
+        print_results(&results, &theme, &current_sort_mode, &mut main_scroll_offset, config.monitor_settings.uptime_enabled);
 
         if config.monitor_settings.uptime_enabled && h >= 32 {
             set_color(Color::DarkCyan);
@@ -1434,7 +1578,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             safe_write_line("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
             reset_color();
 
-            print_uptime(&results, &uptime_history, &alert_locked, &theme);
+            let mut overhead = 14;
+            let h_term = h as usize;
+            if h_term < 24 { overhead -= 6; }
+            if h_term < 22 { overhead -= 2; }
+            if h_term < 18 { overhead -= 2; }
+            if h_term < 16 { overhead -= 2; }
+            
+            let available_height = h_term.saturating_sub(overhead).max(6);
+            let display_count = (available_height.saturating_sub(15) / 2).max(3).min(results.len());
+
+            print_uptime(&results, &uptime_history, &alert_locked, &theme, main_scroll_offset, display_count);
         }
 
         // Interface list if all down
@@ -1494,6 +1648,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     elapsed = total_delay; // break loop
                                     break;
                                 }
+                            } else if let KeyCode::Up = key.code {
+                                if main_scroll_offset > 0 {
+                                    main_scroll_offset -= 1;
+                                }
+                                need_check = false;
+                                break_now = true;
+                                break;
+                            } else if let KeyCode::Down = key.code {
+                                let total_count = last_results.len();
+                                let mut overhead = 14;
+                                let h_term = get_height() as usize;
+                                if h_term < 24 { overhead -= 6; }
+                                if h_term < 22 { overhead -= 2; }
+                                if h_term < 18 { overhead -= 2; }
+                                if h_term < 16 { overhead -= 2; }
+                                
+                                let available_height = h_term.saturating_sub(overhead).max(6);
+                                let display_count = if config.monitor_settings.uptime_enabled && h_term >= 32 {
+                                    (available_height.saturating_sub(15) / 2).max(3)
+                                } else {
+                                    available_height.saturating_sub(6).max(3)
+                                };
+                                let display_count = display_count.min(total_count);
+                                let max_scroll = total_count.saturating_sub(display_count);
+                                if main_scroll_offset < max_scroll {
+                                    main_scroll_offset += 1;
+                                }
+                                need_check = false;
+                                break_now = true;
+                                break;
                             } else if let KeyCode::Char('r') | KeyCode::Char('R') = key.code {
                                 config = load_or_create_config(&config_path);
                                 theme = init_theme(&config.color_theme);
