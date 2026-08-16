@@ -6,32 +6,51 @@
 [![Version](https://img.shields.io/badge/Version-2.0.0-purple?style=flat-square)](README.md)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-Ultra-fast asynchronous website uptime, HTTP latency, and ICMP accessibility monitoring daemon in Rust.
+High-throughput asynchronous website uptime, HTTP response time, and unprivileged ICMP accessibility monitoring daemon in Rust.
 
 ## Русский
 
 ### Что это
 
-`WebsiteAccessibilityMonitor (WAM)` — высокопроизводительная утилита на Rust для непрерывного мониторинга доступности веб-сайтов и серверов через параллельные HTTP(S) запросы и ICMP-пинг (без необходимости прав администратора на Windows).
+`WebsiteAccessibilityMonitor (WAM)` — высокопроизводительный сервис непрерывного мониторинга доступности веб-сайтов и серверов на языке Rust. Программа выполняет параллельную проверку сотен хостов в секунду по протоколам HTTP/HTTPS и ICMP-пинг без необходимости запуска от имени администратора на Windows.
 
 ### Ключевые возможности
 
-- параллельная проверка сотен хостов в секунду благодаря асинхронному рантайму Tokio;
-- расчёт времени отклика (TTFB, latency), HTTP статус-кодов и процента аптайма;
-- отправка мгновенных оповещений о сбоях в Telegram и вебхуки;
-- экспорт статистики и логов в JSON и CSV.
+- **Параллельный опрос сотен ресурсов**: Асинхронный конвейер на базе `Tokio` и пула соединений `Reqwest`.
+- **ICMP Ping без Root/Admin**: Использование нативного Windows `IcmpSendEcho` API для отправки ICMP эхо-запросов без raw socket привилегий.
+- **Детальная метрика производительности**: Фиксация DNS lookup time, TCP connect time, TLS handshake, TTFB и общего времени ответа.
+- **Оповещения в реальном времени**: Мгновенная отправка алертов о падениях и восстановлении сайтов в Telegram-боты и вебхуки.
+- **Логирование и отчёты**: Экспорт структурированных отчётов в JSON и CSV с подсчётом процента аптайма (SLA 99.9%).
 
-### Особенности
+### Параметры конфигурации (`config.json`)
 
-- минимальное потребление системных ресурсов (<15 МБ RAM);
-- поддержка сжатия gzip/brotli/deflate при проверках;
-- готовые скрипты быстрого запуска для Windows (`Start.bat`, `StartLite.bat`).
+```json
+{
+  "check_interval_seconds": 30,
+  "timeout_seconds": 5,
+  "retry_count": 2,
+  "telegram_alerts": {
+    "enabled": true,
+    "bot_token": "YOUR_BOT_TOKEN",
+    "chat_id": "YOUR_CHAT_ID"
+  },
+  "targets": [
+    {
+      "name": "PortalSHVK Main",
+      "url": "https://порталшвк.рф",
+      "expected_status": 200,
+      "ping_enabled": true
+    }
+  ]
+}
+```
 
-### Использование
+### Сборка и запуск
 
 ```bash
-cargo run --release
+cargo build --release
 ```
+Для быстрого запуска на Windows доступны готовые скрипты [`Start.bat`](file:///E:/Coding/WebsiteAccessibilityMonitor/Start.bat) и [`StartLite.bat`](file:///E:/Coding/WebsiteAccessibilityMonitor/StartLite.bat).
 
 ---
 
@@ -39,26 +58,22 @@ cargo run --release
 
 ### What It Is
 
-`WebsiteAccessibilityMonitor (WAM)` is an ultra-fast, asynchronous Rust daemon monitoring website uptime, HTTP response latency, and ICMP connectivity.
+`WebsiteAccessibilityMonitor (WAM)` is an ultra-fast, asynchronous Rust daemon designed for continuous uptime monitoring, HTTP latency profiling, and unprivileged ICMP accessibility checks.
 
 ### Key Features
 
-- concurrent polling of hundreds of target URLs powered by Tokio and Reqwest;
-- precise latency metrics (TTFB, connection time), HTTP error status tracking, and uptime SLA percentiles;
-- instant downtime notifications via Telegram bots and custom HTTP webhooks;
-- structured JSON/CSV logging and audit trail export.
+- **Concurrent Multi-Target Polling**: Tokio-powered async pipeline polling hundreds of endpoints per second.
+- **Unprivileged Windows ICMP Ping**: Direct integration with Windows `IcmpSendEcho` API requiring zero administrator privileges.
+- **Latency Breakdown**: Measures DNS resolution, TCP handshake, TLS negotiation, TTFB, and full payload download duration.
+- **Instant Incident Telemetry**: Dispatches failure alerts and recovery banners to Telegram channels and custom HTTP webhooks.
+- **Audit Logging**: Generates JSON and CSV uptime SLA telemetry logs.
 
-### Features
-
-- minimal footprint with less than 15 MB RAM utilization;
-- automatic support for Brotli, Gzip, and Deflate compression handshakes;
-- convenient Windows launch scripts (`Start.bat`, `StartLite.bat`).
-
-### Usage
+### Build and Running
 
 ```bash
-cargo run --release
+cargo build --release
 ```
+Run using `Start.bat` or `./target/release/website_accessibility_monitor`.
 
 ## Credits
 
