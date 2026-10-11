@@ -8,6 +8,12 @@
 
 WAM — консольный монитор доступности HTTP/HTTPS-ресурсов. Он проверяет DNS, HTTP, фактический TCP-порт URL, TLS для HTTPS, известные страницы-заглушки и, при явной настройке, сравнивает прямой путь с HTTP/SOCKS-прокси.
 
+- Статус: активный. Версия 2.1.0 — порт на Rust (ранняя версия была на .NET и удалена из репозитория).
+- Стек: Rust 2024 (MSRV 1.88), tokio, reqwest, ratatui/crossterm; на Windows — `windows-service`, `winping`.
+- Требования: Rust 1.88+ (`rustup`), для сборки на Linux — OpenSSL dev-пакет (TLS через `native-tls`).
+
+[English version below](#english)
+
 ## Что изменилось в 2.1
 
 - Диагностика больше не объявляет любой таймаут «блокировкой». Статус `*_BLOCK` выставляется только при дополнительном сигнале: прямой путь не работает, а тот же URL через настроенный прокси доступен. Это всё равно техническая гипотеза, не юридическое доказательство.
@@ -230,4 +236,75 @@ cargo test --all-targets --all-features
 cargo build --release --bins
 ```
 
-CI выполняет эти проверки на Windows и Linux. Лицензия — MIT.
+CI (`.github/workflows/rust.yml`) выполняет эти проверки на Windows и Linux.
+
+## Структура проекта
+
+| Путь | Назначение |
+|---|---|
+| `src/main.rs` | Бинарь `website_accessibility_monitor`: headless-проверка (`--json`), `--watch`, служба Windows, `--metrics` |
+| `src/bin/sitemonitor.rs`, `src/bin/sitemonitor_lite.rs` | Бинари `SiteMonitor` и `SiteMonitorLite` (TUI) |
+| `src/tui/` | Интерфейс на ratatui |
+| `src/monitor.rs`, `src/network.rs`, `src/notice.rs`, `src/expiry.rs` | Проверки, диагностика, заглушки, сроки сертификатов и доменов |
+| `src/config.rs`, `src/model.rs`, `src/storage.rs` | Формат и сохранение `config.json`, история, журнал, CSV |
+| `src/daemon.rs`, `src/service.rs`, `src/metrics.rs`, `src/webhooks.rs` | Фоновый режим, служба Windows, Prometheus, уведомления |
+| `deploy/` | Юнит systemd и пример правил алертов Prometheus |
+| `Start.bat`, `StartLite.bat` | Запуск TUI на Windows (собирают release-бинарь через cargo, если его нет) |
+
+`config.json`, `uptime_history.json` и `results.csv` — локальные данные, они в `.gitignore`.
+
+## Лицензия
+
+MIT, см. [LICENSE](LICENSE).
+
+---
+
+## English
+
+WAM is a console uptime monitor for HTTP/HTTPS resources. It checks DNS, HTTP, the actual TCP port of the URL, TLS for HTTPS and known block-page stubs; when `proxy_url` is set it compares the direct path with an HTTP/SOCKS proxy route to tell outages from likely blocking.
+
+- Status: active. Version 2.1.0, a Rust port (the earlier .NET version has been removed).
+- Stack: Rust 2024 (MSRV 1.88), tokio, reqwest, ratatui/crossterm; on Windows `windows-service` and `winping`.
+- Requirements: Rust 1.88+; on Linux an OpenSSL development package (TLS uses `native-tls`).
+
+### Build and run
+
+```powershell
+cargo build --release --bins
+.\target\release\SiteMonitor.exe        # full TUI
+.\target\release\SiteMonitorLite.exe    # compact TUI for narrow windows / SSH
+```
+
+On Windows `Start.bat` / `StartLite.bat` do the same (building with cargo if the binary is missing). The TUI creates `config.json` next to the executable on first start; `--config PATH` points to another file.
+
+The `website_accessibility_monitor` binary covers non-interactive use:
+
+| Flag | Purpose |
+|---|---|
+| `--json [URL...]` | One-shot check, JSON output. Exit code 0 = all OK/WARN, 2 = something down, 1 = startup error |
+| `--watch` | Continuous background monitoring (notifications, uptime history, log, CSV); reloads `config.json` on change |
+| `--metrics ADDR` | Prometheus endpoint `http://ADDR/metrics` and `/health` (port only means `127.0.0.1`) |
+| `--install-service` / `--uninstall-service` | Windows service `WebsiteAccessibilityMonitor` (run as administrator) |
+| `--config PATH`, `--log-file PATH`, `--quiet` | Config file (default `config.json` in the current directory), log file, hide clean cycle summaries |
+
+Linux: see [deploy/wam.service](deploy/wam.service) (systemd) and [deploy/prometheus-alerts.yml](deploy/prometheus-alerts.yml).
+
+### Configuration
+
+All settings live in `config.json` (format above): `monitor_settings`, `websites`, `website_groups`, `Monitor` (logging), `csv_export`, `webhooks` (Telegram / Discord / Slack), `uptime_history_path`, `maintenance_windows`. Header values and webhook tokens are stored in plain JSON; restrict access to the file and keep it out of Git (it is already in `.gitignore`). The only environment variable read is `NO_COLOR`, which disables colours.
+
+### Tests
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+```
+
+### Limitations
+
+A single machine sees only its own network, DNS and route. A `*_BLOCK` status is a technical hypothesis backed by a successful proxy check, not proof. No automatic circumvention, no ECH/QUIC.
+
+### License
+
+MIT, see [LICENSE](LICENSE).
