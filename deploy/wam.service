@@ -1,0 +1,33 @@
+# systemd unit for the WAM background monitor.
+#
+#   sudo useradd --system --home /var/lib/wam --create-home wam
+#   sudo install -m 755 website_accessibility_monitor /usr/local/bin/
+#   sudo cp wam.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now wam
+#   journalctl -u wam -f
+#
+# Relative paths in config.json (history, logs, CSV) resolve next to the config file.
+# Editing config.json is picked up automatically, no restart needed.
+
+[Unit]
+Description=Website Accessibility Monitor (WAM)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wam
+Group=wam
+WorkingDirectory=/var/lib/wam
+ExecStart=/usr/local/bin/website_accessibility_monitor --watch --config /var/lib/wam/config.json --metrics 127.0.0.1:9898
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/wam
+
+[Install]
+WantedBy=multi-user.target

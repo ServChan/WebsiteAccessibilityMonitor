@@ -24,6 +24,8 @@ Desktop.ini
 # Local runtime data
 config.json
 uptime_history.json
+/results.csv
+*.bak
 
 
 # Added by cargo

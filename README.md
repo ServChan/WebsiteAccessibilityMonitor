@@ -1,80 +1,233 @@
 # WebsiteAccessibilityMonitor (WAM)
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen?style=flat-square)](README.md)
-[![Language](https://img.shields.io/badge/Rust-2024%20%7C%201.80+-blue?style=flat-square&logo=rust)](README.md)
-[![Runtime](https://img.shields.io/badge/Async-Tokio%20%7C%20Reqwest-orange?style=flat-square)](README.md)
-[![Version](https://img.shields.io/badge/Version-2.0.0-purple?style=flat-square)](README.md)
+[![CI](https://img.shields.io/badge/CI-Rustfmt%20%7C%20Clippy%20%7C%20Tests-brightgreen?style=flat-square)](.github/workflows/rust.yml)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat-square)](#сборка-и-запуск)
+[![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange?style=flat-square&logo=rust)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-2.1.0-purple?style=flat-square)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-High-throughput asynchronous website uptime, HTTP response time, and unprivileged ICMP accessibility monitoring daemon in Rust.
+WAM — консольный монитор доступности HTTP/HTTPS-ресурсов. Он проверяет DNS, HTTP, фактический TCP-порт URL, TLS для HTTPS, известные страницы-заглушки и, при явной настройке, сравнивает прямой путь с HTTP/SOCKS-прокси.
 
-## Русский
+## Что изменилось в 2.1
 
-### Что это
+- Диагностика больше не объявляет любой таймаут «блокировкой». Статус `*_BLOCK` выставляется только при дополнительном сигнале: прямой путь не работает, а тот же URL через настроенный прокси доступен. Это всё равно техническая гипотеза, не юридическое доказательство.
+- Системный DNS сравнивается с DoH по A и AAAA. Непересекающиеся ответы отмечаются как `dns_anomaly`, но сами по себе не считаются блокировкой: CDN и геораспределённый DNS часто законно возвращают разные адреса.
+- TCP/TLS-проверки используют схему и порт исходного URL, перебирают доступные IPv4/IPv6-адреса и имеют реальный асинхронный таймаут.
+- SOCKS4/SOCKS5 и HTTP-прокси поддерживаются через `proxy_url`. Прямой клиент принудительно не использует системный прокси, чтобы сравнение маршрутов оставалось честным.
+- `HEAD` корректно переключается на `GET` при 405/501 и не расходует попытку. Повторяются временные HTTP 408/425/429/500–504.
+- Тело ответа читается только до заданного лимита; число одновременных проверок ограничено.
+- Старый список `websites` и `website_groups` работают одновременно. Некорректные URL и заголовки пропускаются, а повреждённый `config.json` больше не перезаписывается.
+- История хранит сутки с учётом интервала, журнал сохраняет подкаталоги, CSV содержит диагностические поля, уведомления проверяют HTTP-ответ webhook.
+- `SiteMonitor` и `SiteMonitorLite` — один полноэкранный интерфейс на ratatui вместо двух копий ручной отрисовки: сайты добавляются и удаляются прямо в программе, настройки редактируются с проверкой значений, а ошибки сохранения и уведомлений попадают в раздел «События», не ломая экран.
+- Распознавание заглушек больше не срабатывает на обычные страницы со словами «заблокирован» или «единый реестр» и не теряет заглушку, если лимит тела обрезал UTF-8-символ.
+- Адреса с IPv6-литералом (`http://[::1]:8080/`) проверяются корректно, системный DNS ограничен таймаутом запроса, а токен Telegram и URL вебхуков не попадают в тексты ошибок.
+- Проверка ожидаемого текста в ответе, порог медленного ответа, контроль срока TLS-сертификата и регистрации домена, окна обслуживания.
+- Постоянный фоновый режим `--watch` для systemd и консоли, служба Windows и метрики Prometheus.
 
-`WebsiteAccessibilityMonitor (WAM)` — высокопроизводительный сервис непрерывного мониторинга доступности веб-сайтов и серверов на языке Rust. Программа выполняет параллельную проверку сотен хостов в секунду по протоколам HTTP/HTTPS и ICMP-пинг без необходимости запуска от имени администратора на Windows.
+## Сборка и запуск
 
-### Ключевые возможности
+```powershell
+cargo build --release --bins
+```
 
-- **Параллельный опрос сотен ресурсов**: Асинхронный конвейер на базе `Tokio` и пула соединений `Reqwest`.
-- **ICMP Ping без Root/Admin**: Использование нативного Windows `IcmpSendEcho` API для отправки ICMP эхо-запросов без raw socket привилегий.
-- **Детальная метрика производительности**: Фиксация DNS lookup time, TCP connect time, TLS handshake, TTFB и общего времени ответа.
-- **Оповещения в реальном времени**: Мгновенная отправка алертов о падениях и восстановлении сайтов в Telegram-боты и вебхуки.
-- **Логирование и отчёты**: Экспорт структурированных отчётов в JSON и CSV с подсчётом процента аптайма (SLA 99.9%).
+Основной интерфейс:
 
-### Параметры конфигурации (`config.json`)
+```powershell
+.\target\release\SiteMonitor.exe
+```
+
+Упрощённый интерфейс:
+
+```powershell
+.\target\release\SiteMonitorLite.exe
+```
+
+Параметр `--config PATH` задаёт другой файл настроек, `--help` выводит справку.
+
+## Интерфейс
+
+Пять разделов, переключаются цифрами `1`–`5` или `Tab`:
+
+| Раздел | Что показывает |
+|---|---|
+| Обзор | Сводка (сколько сайтов недоступно, когда следующая проверка), список с проблемами сверху и подробности выбранного сайта |
+| Сайты | Полная таблица: статус, код HTTP, время ответа, IP, повторы, группа |
+| Аптайм | Процент доступности за 24 часа и полоса последних замеров (`█` — доступен, `▁` — сбой) |
+| События | Сбои и восстановления, итоги циклов, ошибки записи файлов и отправки уведомлений |
+| Настройки | Все параметры `monitor_settings`, журналов, CSV, уведомлений и прокси |
+
+Основные клавиши: `R` — проверить сейчас, `P` — пауза, `A` — добавить сайт, `D` — удалить (с подтверждением), `T` — текст, который должен быть в ответе сайта, `Enter` — подробности, `/` — фильтр, `S` — сортировка, `E` — экспорт CSV, `Ctrl+S` — сохранить настройки, `Ctrl+R` — перечитать `config.json`, `?` — полная справка, `Q` — выход. Горячие клавиши работают и в русской раскладке, длинные токены и адреса можно вставлять из буфера обмена.
+
+`SiteMonitorLite` — те же возможности в компактной компоновке (без сводной панели и боковых подробностей) и с более редкой перерисовкой; удобен для узких окон и SSH/RDP. Минимальный размер окна — 50 × 14.
+
+Статус всегда подписан текстом, цвет лишь дублирует его. Цвета задаются в `color_theme` (`Green`, `DarkCyan`, `LightRed`, `#1e90ff` и т. п.); переменная окружения `NO_COLOR` отключает цвета полностью. Если `config.json` повреждён, программа работает с настройками по умолчанию и отказывается сохранять изменения, пока файл не исправлен.
+
+## Что проверяется помимо доступности
+
+| Проверка | Как работает | Статус |
+|---|---|---|
+| Ожидаемый текст | Ответ должен содержать заданную строку (без учёта регистра); читается до 1 МБ тела. Задаётся клавишей `T` в списке сайтов или полем `expect_text` | `CONTENT_MISMATCH` — сбой |
+| Медленный ответ | Ответ дольше `slow_threshold_ms` (по умолчанию 3000 мс, `0` — выкл.). Для отдельного сайта — поле `slow_threshold_ms` | `SLOW` — предупреждение |
+| Сертификат | Дата окончания берётся из сертификата, полученного при обычном HTTPS-запросе | `CERT_EXPIRING` за `cert_warn_days` дней (по умолчанию 14) |
+| Домен | Дата окончания регистрации через RDAP (адрес реестра из списка IANA), для зон без RDAP (`.ru`, `.рф`, `.su`) — через WHOIS. Кешируется на 12 часов | `DOMAIN_EXPIRING` за `domain_warn_days` дней (по умолчанию 30) |
+| Окна обслуживания | В заданное время проверки идут, но сбои не вызывают уведомлений и не портят аптайм | `ОБСЛУЖИВАНИЕ` в интерфейсе, `maintenance: true` в JSON |
+
+Предупреждения (`WARN`, `SLOW`, `CERT_EXPIRING`, `DOMAIN_EXPIRING`) означают, что сайт доступен: уведомления о сбое по ним не отправляются. Все сроки видны в подробностях сайта (`Enter`), срок сертификата — ещё и в отдельном столбце таблицы «Сайты».
+
+## Headless-режим
+
+Одноразовая проверка для планировщика, CI или PowerShell:
+
+```powershell
+.\target\release\website_accessibility_monitor.exe --json https://example.com https://example.net
+```
+
+Без URL headless-команда читает `config.json` из текущей папки. Схему можно не указывать: `example.com` проверяется как `https://example.com/`. Код завершения `0` означает, что все цели имеют статус `OK`/`WARN`; `2` — что есть недоступные цели; `1` — ошибка запуска (например, некорректный URL). Параметр `--config PATH` задаёт другой файл конфигурации.
+
+На Windows также доступны `Start.bat` и `StartLite.bat`. При первом запуске рядом с исполняемым файлом создаётся `config.json`.
+
+## Фоновый режим, служба и метрики
+
+`--watch` проверяет сайты постоянно, без интерфейса: по расписанию, с уведомлениями, историей аптайма, журналом и CSV, как в `SiteMonitor`. Изменения в `config.json` подхватываются автоматически, без перезапуска. События пишутся в консоль (или в файл через `--log-file`), `--quiet` скрывает итоги циклов без сбоев. Остановка — `Ctrl+C` или `SIGTERM`, история аптайма при этом сохраняется.
+
+```powershell
+.\target\release\website_accessibility_monitor.exe --watch --config C:\WAM\config.json --metrics 127.0.0.1:9898
+```
+
+Относительные пути из настроек (история, журнал, CSV) считаются от папки, где лежит `config.json`.
+
+**Служба Windows.** Из консоли, запущенной от имени администратора:
+
+```powershell
+.\target\release\website_accessibility_monitor.exe --install-service --config C:\WAM\config.json --metrics 127.0.0.1:9898
+```
+
+Служба `WebsiteAccessibilityMonitor` запускается сразу и затем автоматически вместе с Windows. Журнал событий — `wam-service.log` рядом с `config.json` (или путь из `--log-file`). Удаление: `--uninstall-service`.
+
+**Linux (systemd).** Готовый юнит с инструкцией по установке — [deploy/wam.service](deploy/wam.service); события читаются через `journalctl -u wam -f`.
+
+**Prometheus.** С `--metrics АДРЕС` по адресу `http://АДРЕС/metrics` отдаются:
+
+| Метрика | Значение |
+|---|---|
+| `wam_up` | 1 — сайт доступен (OK или предупреждение), 0 — нет |
+| `wam_status{status="..."}` | Текущий диагностический статус |
+| `wam_maintenance` | 1 — проверка пришлась на окно обслуживания |
+| `wam_response_time_seconds` | Время ответа |
+| `wam_http_status_code` | HTTP-код |
+| `wam_content_match` | 1/0 — найден ли ожидаемый текст |
+| `wam_cert_expiry_timestamp_seconds` | Окончание сертификата (Unix time) |
+| `wam_domain_expiry_timestamp_seconds` | Окончание регистрации домена (Unix time) |
+| `wam_uptime_ratio` | Доля успешных проверок за 24 часа |
+| `wam_checks_total{result="ok\|failed"}` | Счётчик проверок с момента запуска |
+| `wam_last_check_timestamp_seconds`, `wam_last_cycle_*` | Время последней проверки и цикла |
+
+Все метрики сайтов имеют метки `url` и `group`. Пример правил алертов — [deploy/prometheus-alerts.yml](deploy/prometheus-alerts.yml). `/health` отвечает `ok` для проверок живости. Если указать только порт (`--metrics 9898`), слушается `127.0.0.1`; открывать порт наружу стоит только за файрволом: в метках видны адреса сайтов.
+
+## Актуальный формат config.json
 
 ```json
 {
-  "check_interval_seconds": 30,
-  "timeout_seconds": 5,
-  "retry_count": 2,
-  "telegram_alerts": {
-    "enabled": true,
-    "bot_token": "YOUR_BOT_TOKEN",
-    "chat_id": "YOUR_CHAT_ID"
+  "monitor_settings": {
+    "interval": 60,
+    "timeout": 8,
+    "retries_max": 2,
+    "valid_status_codes": [200, 201, 202, 204, 301, 302, 307, 308],
+    "warn_status_codes": [401, 403, 407, 408, 425, 429],
+    "sorted": "status",
+    "ping_enabled": true,
+    "uptime_enabled": true,
+    "use_head_first": false,
+    "proxy_url": "socks5h://127.0.0.1:1080",
+    "doh_server": "https://cloudflare-dns.com/dns-query",
+    "max_concurrency": 32,
+    "response_body_limit_kb": 64,
+    "diagnostics_enabled": true,
+    "slow_threshold_ms": 3000,
+    "cert_warn_days": 14,
+    "domain_check_enabled": true,
+    "domain_warn_days": 30
   },
-  "targets": [
+  "websites": [
+    "https://example.com",
+    "http://example.net:8080/health",
+    { "url": "https://shop.example.com", "expect_text": "Корзина", "slow_threshold_ms": 1500 }
+  ],
+  "website_groups": [
     {
-      "name": "PortalSHVK Main",
-      "url": "https://порталшвк.рф",
-      "expected_status": 200,
-      "ping_enabled": true
+      "name": "API",
+      "interval": 30,
+      "sites": [
+        {
+          "url": "https://api.example.com/health",
+          "headers": { "Authorization": "Bearer TOKEN" }
+        }
+      ]
     }
+  ],
+  "Monitor": {
+    "logging_enabled": true,
+    "log_file_path": "logs/monitor.log",
+    "log_max_size_mb": 10,
+    "log_rotate_daily": true
+  },
+  "csv_export": {
+    "enabled": false,
+    "file_path": "results.csv"
+  },
+  "webhooks": {
+    "enabled": false,
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "discord_webhook_url": "",
+    "slack_webhook_url": "",
+    "notify_on_down": true,
+    "notify_on_recovery": true,
+    "min_failures_before_alert": 3
+  },
+  "uptime_history_path": "uptime_history.json",
+  "maintenance_windows": [
+    { "name": "Ночные бэкапы", "days": ["пн", "ср", "пт"], "start": "02:00", "end": "02:30" },
+    { "name": "Релиз API", "start": "23:30", "end": "00:30", "targets": ["api.example.com", "API"] }
   ]
 }
 ```
 
-### Сборка и запуск
+Сайт в `websites` и в `sites` групп задаётся строкой или объектом с полями `url`, `headers`, `expect_text`, `slow_threshold_ms`. Сайты без дополнительных полей программа сохраняет обратно строками.
 
-```bash
-cargo build --release
+В окне обслуживания `days` — дни недели (`mon`..`sun` или `пн`..`вс`, пусто — каждый день), `start`/`end` — местное время `ЧЧ:ММ`; окно через полночь относится к дню начала. `targets` — части адреса или имени группы, пусто — все сайты.
+
+`proxy_url` оставьте пустым, если контрольный маршрут не нужен. Для SOCKS с разрешением имени на стороне прокси используйте схему `socks5h://`; это особенно важно, когда локальный DNS недоступен или подменён. Секреты в заголовках и webhook-настройках хранятся в обычном JSON — ограничьте доступ к файлу и не добавляйте его в Git.
+
+## Статусы диагностики
+
+| Статус | Значение |
+|---|---|
+| `OK` / `WARN` | Прямой HTTP-запрос получил разрешённый или предупреждающий код |
+| `SLOW` / `CERT_EXPIRING` / `DOMAIN_EXPIRING` | Сайт доступен, но отвечает медленнее порога или скоро истекает сертификат либо домен |
+| `CONTENT_MISMATCH` | Сервер ответил допустимым кодом, но в ответе нет ожидаемого текста |
+| `HTTP_ERROR` | Код ответа не входит ни в разрешённые, ни в предупреждающие |
+| `DNS_ERROR` | Системный DNS не дал адрес; блокировка не подтверждена |
+| `DNS_BLOCK` | Системный DNS не дал адрес, DoH дал адреса, а URL доступен через прокси |
+| `TCP_TIMEOUT` / `TCP_RESET` | Ошибка TCP на фактическом порту URL без достаточного подтверждения причины |
+| `TCP_BLOCK` | TCP прямого пути не работает, но URL доступен через прокси |
+| `TLS_ERROR` / `SSL_ERROR` | TLS-рукопожатие не прошло; возможны сертификат, сервер, антивирус или сеть |
+| `TLS_BLOCK` | Сбой TLS прямого пути подтверждён успешным доступом через прокси |
+| `HTTP_STUB` | Получен HTTP 451 или в ограниченном фрагменте тела найдены признаки заглушки |
+| `HTTP_BLOCK` | Заглушка/HTTP-сбой отсутствует на контрольном прокси-маршруте |
+| `HTTP_TIMEOUT` | TCP/TLS работают, но HTTP не завершился; возможны перегрузка или троттлинг |
+
+## Ограничения измерений
+
+Один компьютер видит только свою сеть, DNS и маршрут. Без независимой контрольной точки нельзя надёжно отличить блокировку от сбоя сайта, маршрутизации, CDN, антивируса или корпоративного фильтра. DoH показывает доступность конкретного DoH-сервера и альтернативный DNS-ответ, но не является доказательством вмешательства. Программа не обходит блокировки автоматически и не реализует ECH/QUIC; прокси используется только для явно настроенной контрольной проверки и webhook-уведомлений.
+
+## Разработка
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release --bins
 ```
-Для быстрого запуска на Windows доступны готовые скрипты [`Start.bat`](file:///E:/Coding/WebsiteAccessibilityMonitor/Start.bat) и [`StartLite.bat`](file:///E:/Coding/WebsiteAccessibilityMonitor/StartLite.bat).
 
----
-
-## English
-
-### What It Is
-
-`WebsiteAccessibilityMonitor (WAM)` is an ultra-fast, asynchronous Rust daemon designed for continuous uptime monitoring, HTTP latency profiling, and unprivileged ICMP accessibility checks.
-
-### Key Features
-
-- **Concurrent Multi-Target Polling**: Tokio-powered async pipeline polling hundreds of endpoints per second.
-- **Unprivileged Windows ICMP Ping**: Direct integration with Windows `IcmpSendEcho` API requiring zero administrator privileges.
-- **Latency Breakdown**: Measures DNS resolution, TCP handshake, TLS negotiation, TTFB, and full payload download duration.
-- **Instant Incident Telemetry**: Dispatches failure alerts and recovery banners to Telegram channels and custom HTTP webhooks.
-- **Audit Logging**: Generates JSON and CSV uptime SLA telemetry logs.
-
-### Build and Running
-
-```bash
-cargo build --release
-```
-Run using `Start.bat` or `./target/release/website_accessibility_monitor`.
-
-## Credits
-
-Developed by LTS_Server. Licensed under MIT.
+CI выполняет эти проверки на Windows и Linux. Лицензия — MIT.

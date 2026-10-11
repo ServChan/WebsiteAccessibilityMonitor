@@ -9,21 +9,23 @@ if exist "%~dp0target\release\%EXE%" (
     goto :run_release
 )
 
-:: If not found, check if it exists in debug folder
-if exist "%~dp0target\debug\%EXE%" (
-    goto :run_debug
-)
-
 :: Try to build using cargo if cargo is installed
 where cargo >nul 2>&1
-if %errorlevel%==0 (
-    echo Building SiteMonitor in Release mode...
-    cargo build --release
-    if %errorlevel%==0 (
-        goto :run_release
-    )
+if errorlevel 1 goto :try_debug
+echo Building SiteMonitor in Release mode...
+pushd "%~dp0"
+cargo build --release --bin SiteMonitor
+if errorlevel 1 (
+    popd
+    goto :build_failed
 )
+popd
+goto :run_release
 
+:try_debug
+if exist "%~dp0target\debug\%EXE%" goto :run_debug
+
+:build_failed
 echo.
 echo [ERROR] %EXE% not found!
 echo Please make sure Rust is installed and build the project:

@@ -1,0 +1,49 @@
+# Example alerting rules for the metrics WAM exposes at /metrics.
+# Planned maintenance is excluded through wam_maintenance.
+groups:
+  - name: wam
+    rules:
+      - alert: SiteDown
+        expr: wam_up == 0 and wam_maintenance == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.url }} недоступен"
+
+      - alert: SiteContentMissing
+        expr: wam_content_match == 0 and wam_maintenance == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.url }}: в ответе нет ожидаемого текста"
+
+      - alert: SiteSlow
+        expr: wam_response_time_seconds > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.url }} отвечает дольше 3 секунд"
+
+      - alert: CertificateExpiringSoon
+        expr: (wam_cert_expiry_timestamp_seconds - time()) / 86400 < 14
+        labels:
+          severity: warning
+        annotations:
+          summary: "Сертификат {{ $labels.url }} истекает через {{ $value | humanize }} дн."
+
+      - alert: DomainExpiringSoon
+        expr: (wam_domain_expiry_timestamp_seconds - time()) / 86400 < 30
+        labels:
+          severity: warning
+        annotations:
+          summary: "Домен {{ $labels.url }} истекает через {{ $value | humanize }} дн."
+
+      - alert: MonitorStalled
+        expr: time() - wam_last_cycle_timestamp_seconds > 600
+        labels:
+          severity: critical
+        annotations:
+          summary: "WAM не завершал циклы проверок больше 10 минут"
