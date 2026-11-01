@@ -289,7 +289,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::styled("РАБОТАЕТ", Style::default().fg(theme.ok))
     };
     let full_left = Line::from(vec![
-        Span::styled(" SITE MONITOR ", brand),
+        Span::styled(" WAM ", brand),
         Span::raw(format!(
             " {} {}  ",
             env!("CARGO_PKG_VERSION"),
@@ -297,11 +297,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         state.clone(),
     ]);
-    let short_left = Line::from(vec![
-        Span::styled(" SITE MONITOR ", brand),
-        Span::raw(" "),
-        state,
-    ]);
+    let short_left = Line::from(vec![Span::styled(" WAM ", brand), Span::raw(" "), state]);
 
     let summary = app.summary();
     let counts = |pending: bool| {
@@ -494,6 +490,8 @@ fn render_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 total
             )),
         ]
+    } else if total == 0 {
+        vec![Span::raw("Сайтов пока нет")]
     } else if summary.pending == total {
         vec![Span::styled(
             format!(
@@ -599,6 +597,28 @@ fn render_sites_page(frame: &mut Frame<'_>, app: &App, view: &mut ViewState, are
 
 fn render_no_matches(frame: &mut Frame<'_>, app: &App, area: Rect, heading: &str) {
     let theme = &app.theme;
+    if app.filter.is_empty() {
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "Сайтов пока нет",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("A", theme.key()),
+                Span::raw(" — добавить первый сайт: проверка начнётся сразу"),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(text)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true })
+                .block(panel(theme, title(heading))),
+            area,
+        );
+        return;
+    }
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -1210,7 +1230,7 @@ fn render_settings(frame: &mut Frame<'_>, app: &App, view: &mut ViewState, area:
     let mut items = Vec::new();
     let mut selected_line = 0;
     let mut section = None;
-    let label_width = 27;
+    let label_width = 29;
     for (index, field) in SettingField::ALL.iter().enumerate() {
         if section != Some(field.section()) {
             section = Some(field.section());
@@ -1583,16 +1603,20 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::super::app::tests::test_app;
+    use super::super::app::tests::{test_app, test_app_with};
     use super::*;
     use crate::monitor::ScanMessage;
 
     fn render_text(width: u16, height: u16, configure: impl FnOnce(&mut App)) -> String {
         let (mut app, _directory) = test_app();
         configure(&mut app);
+        render_app(&mut app, width, height)
+    }
+
+    fn render_app(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
             .map(|y| {
@@ -1614,7 +1638,7 @@ mod tests {
     #[test]
     fn overview_shows_navigation_pending_sites_and_hints() {
         let output = render_text(110, 32, |_| {});
-        assert!(output.contains("SITE MONITOR"));
+        assert!(output.contains("WAM"));
         assert!(output.contains("5 Настройки"));
         assert!(output.contains("Первая проверка: 3 сайта"));
         assert!(output.contains("ожидает"));
@@ -1626,15 +1650,29 @@ mod tests {
     fn every_page_renders_at_minimum_size() {
         for page in Page::ALL {
             let output = render_text(MIN_WIDTH, MIN_HEIGHT, |app| app.page = page);
-            assert!(output.contains("SITE MONITOR"), "{page:?}\n{output}");
+            assert!(output.contains("WAM"), "{page:?}\n{output}");
         }
     }
 
     #[test]
     fn disabled_uptime_explains_how_to_enable_it() {
-        let output = render_text(100, 30, |app| app.page = Page::Uptime);
+        let (mut app, _directory) = test_app_with(|config| {
+            config.monitor_settings.uptime_enabled = false;
+        });
+        app.page = Page::Uptime;
+        let output = render_app(&mut app, 100, 30);
         assert!(output.contains("История аптайма выключена"));
         assert!(output.contains("Ctrl+S"));
+    }
+
+    #[test]
+    fn empty_site_list_points_to_adding_a_site() {
+        let (mut app, _directory) = test_app_with(|config| config.websites.clear());
+        for page in [Page::Overview, Page::Sites, Page::Uptime] {
+            app.page = page;
+            let output = render_app(&mut app, 100, 30);
+            assert!(output.contains("Сайтов пока нет"), "{page:?}\n{output}");
+        }
     }
 
     #[test]

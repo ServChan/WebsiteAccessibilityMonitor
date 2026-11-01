@@ -27,7 +27,7 @@ impl Theme {
             ok: parse_color(&config.ok, Color::Green),
             warn: parse_color(&config.warn, Color::Yellow),
             error: parse_color(&config.error, Color::Red),
-            accent: parse_color(&config.banner, Color::Cyan),
+            accent: parse_color(&config.accent, Color::Cyan),
             fast: parse_color(&config.fast_ms, Color::Green),
             medium: parse_color(&config.medium_ms, Color::Yellow),
             slow: parse_color(&config.slow_ms, Color::Red),

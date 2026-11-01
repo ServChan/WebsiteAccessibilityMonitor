@@ -1,9 +1,12 @@
 [package]
 name = "website_accessibility_monitor"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 rust-version = "1.88"
-default-run = "website_accessibility_monitor"
+description = "Console uptime monitor that tells outages from likely blocking"
+repository = "https://github.com/ServChan/WebsiteAccessibilityMonitor"
+homepage = "https://lts-server.com/projects/website-accessibility-monitor"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1.53", features = ["full"] }
@@ -23,12 +26,12 @@ windows-service = "0.8"
 winping = "0.10"
 
 [[bin]]
-name = "SiteMonitor"
-path = "src/bin/sitemonitor.rs"
-
-[[bin]]
-name = "SiteMonitorLite"
-path = "src/bin/sitemonitor_lite.rs"
+name = "wam"
+path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = "3.22"
+
+[profile.release]
+lto = "thin"
+strip = true

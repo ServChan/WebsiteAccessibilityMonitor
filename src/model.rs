@@ -21,7 +21,7 @@ pub struct MonitorSettings {
     pub sorted: String,
     #[serde(default = "default_ping_enabled")]
     pub ping_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub uptime_enabled: bool,
     #[serde(default = "default_use_head_first")]
     pub use_head_first: bool,
@@ -106,7 +106,7 @@ impl Default for MonitorSettings {
             warn_status_codes: default_warn_status_codes(),
             sorted: default_sorted(),
             ping_enabled: default_ping_enabled(),
-            uptime_enabled: false,
+            uptime_enabled: true,
             use_head_first: default_use_head_first(),
             proxy_url: String::new(),
             doh_server: default_doh_server(),
@@ -122,7 +122,7 @@ impl Default for MonitorSettings {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MonitorConfig {
+pub struct LoggingSettings {
     #[serde(default)]
     pub logging_enabled: bool,
     #[serde(default = "default_log_file_path")]
@@ -143,7 +143,7 @@ const fn default_true() -> bool {
     true
 }
 
-impl Default for MonitorConfig {
+impl Default for LoggingSettings {
     fn default() -> Self {
         Self {
             logging_enabled: false,
@@ -372,10 +372,8 @@ pub struct ColorTheme {
     pub warn: String,
     #[serde(default = "default_color_error")]
     pub error: String,
-    #[serde(default = "default_color_banner")]
-    pub banner: String,
-    #[serde(default = "default_color_header")]
-    pub header: String,
+    #[serde(default = "default_color_accent", alias = "banner")]
+    pub accent: String,
     #[serde(default = "default_color_ok")]
     pub fast_ms: String,
     #[serde(default = "default_color_warn")]
@@ -393,11 +391,8 @@ fn default_color_warn() -> String {
 fn default_color_error() -> String {
     "Red".into()
 }
-fn default_color_banner() -> String {
+fn default_color_accent() -> String {
     "Cyan".into()
-}
-fn default_color_header() -> String {
-    "Magenta".into()
 }
 
 impl Default for ColorTheme {
@@ -406,8 +401,7 @@ impl Default for ColorTheme {
             ok: default_color_ok(),
             warn: default_color_warn(),
             error: default_color_error(),
-            banner: default_color_banner(),
-            header: default_color_header(),
+            accent: default_color_accent(),
             fast_ms: default_color_ok(),
             medium_ms: default_color_warn(),
             slow_ms: default_color_error(),
@@ -444,8 +438,9 @@ pub struct Config {
     pub websites: Vec<WebsiteEntry>,
     #[serde(default)]
     pub website_groups: Vec<WebsiteGroup>,
-    #[serde(default, rename = "Monitor", alias = "monitor")]
-    pub monitor: MonitorConfig,
+    /// `Monitor` is the key used by 2.1 and earlier.
+    #[serde(default, alias = "Monitor")]
+    pub logging: LoggingSettings,
     #[serde(default)]
     pub webhooks: WebhookSettings,
     #[serde(default)]

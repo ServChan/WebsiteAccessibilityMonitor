@@ -1,9 +1,9 @@
 # WebsiteAccessibilityMonitor (WAM)
 
-[![CI](https://img.shields.io/badge/CI-Rustfmt%20%7C%20Clippy%20%7C%20Tests-brightgreen?style=flat-square)](.github/workflows/rust.yml)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat-square)](README.md)
+[![CI](https://img.shields.io/github/actions/workflow/status/ServChan/WebsiteAccessibilityMonitor/rust.yml?branch=main&style=flat-square&label=CI)](.github/workflows/rust.yml)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-blue?style=flat-square)](README.md)
 [![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange?style=flat-square&logo=rust)](Cargo.toml)
-[![Version](https://img.shields.io/badge/Version-2.1.0-purple?style=flat-square)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-2.2.0-purple?style=flat-square)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 Console uptime monitor for HTTP/HTTPS resources: checks DNS, HTTP, the real TCP port, TLS and block-page stubs, and compares the direct path with a proxy route to tell outages from likely blocking.
@@ -22,27 +22,26 @@ Console uptime monitor for HTTP/HTTPS resources: checks DNS, HTTP, the real TCP 
 
 WAM — консольный монитор доступности HTTP/HTTPS-ресурсов. Он проверяет DNS, HTTP, фактический TCP-порт URL, TLS для HTTPS, известные страницы-заглушки и, при явной настройке, сравнивает прямой путь с HTTP/SOCKS-прокси.
 
-- Статус: активный. Версия 2.1.0 — порт на Rust (ранняя версия была на .NET и удалена из репозитория).
+- Статус: активный, версия 2.2.0. Готовая сборка для Windows x64: [lts-server.com](https://lts-server.com/projects/website-accessibility-monitor).
 - Стек: Rust 2024 (MSRV 1.88), tokio, reqwest, ratatui/crossterm; на Windows — `windows-service`, `winping`.
-- Требования: Rust 1.88+ (`rustup`), для сборки на Linux — OpenSSL dev-пакет (TLS через `native-tls`).
+- Сборка из исходников: Rust 1.88+ (`rustup`), на Linux ещё OpenSSL dev-пакет (TLS через `native-tls`).
 
 ### Сборка и запуск
 
-```powershell
-cargo build --release --bins
-```
-
-Основной интерфейс:
+Одна программа `wam` на все режимы:
 
 ```powershell
-.\target\release\SiteMonitor.exe
+cargo build --release
+.\target\release\wam.exe
 ```
 
-Упрощённый интерфейс:
-
-```powershell
-.\target\release\SiteMonitorLite.exe
-```
+| Команда | Что делает |
+|---|---|
+| `wam` | Интерфейс в терминале; `config.json` создаётся рядом с программой |
+| `wam --lite` | Компактный интерфейс для узких окон и SSH/RDP |
+| `wam example.com` | Разовая проверка адресов, `--json` для вывода в JSON |
+| `wam --once` | Разовая проверка целей из `config.json` в текущей папке |
+| `wam --watch` | Постоянный фоновый режим без интерфейса |
 
 Параметр `--config PATH` задаёт другой файл настроек, `--help` выводит справку.
 
@@ -60,9 +59,9 @@ cargo build --release --bins
 
 Основные клавиши: `R` — проверить сейчас, `P` — пауза, `A` — добавить сайт, `D` — удалить (с подтверждением), `T` — текст, который должен быть в ответе сайта, `Enter` — подробности, `/` — фильтр, `S` — сортировка, `E` — экспорт CSV, `Ctrl+S` — сохранить настройки, `Ctrl+R` — перечитать `config.json`, `?` — полная справка, `Q` — выход. Горячие клавиши работают и в русской раскладке, длинные токены и адреса можно вставлять из буфера обмена.
 
-`SiteMonitorLite` — те же возможности в компактной компоновке (без сводной панели и боковых подробностей) и с более редкой перерисовкой; удобен для узких окон и SSH/RDP. Минимальный размер окна — 50 × 14.
+`--lite` даёт те же возможности в компактной компоновке (без сводной панели и боковых подробностей) и с более редкой перерисовкой. Минимальный размер окна — 50 × 14.
 
-Статус всегда подписан текстом, цвет лишь дублирует его. Цвета задаются в `color_theme` (`Green`, `DarkCyan`, `LightRed`, `#1e90ff` и т. п.); переменная окружения `NO_COLOR` отключает цвета полностью. Если `config.json` повреждён, программа работает с настройками по умолчанию и отказывается сохранять изменения, пока файл не исправлен.
+Статус всегда подписан текстом, цвет лишь дублирует его. Цвета задаются в `color_theme` (`Green`, `LightRed`, `#1e90ff` и т. п.); переменная окружения `NO_COLOR` отключает цвета полностью. Если `config.json` повреждён, программа работает с настройками по умолчанию и отказывается сохранять изменения, пока файл не исправлен.
 
 Фоновый режим, служба Windows, метрики Prometheus, формат настроек и все статусы описаны в [руководстве](docs/USER_GUIDE_RU.md).
 
@@ -72,27 +71,27 @@ cargo build --release --bins
 
 WAM is a console uptime monitor for HTTP/HTTPS resources. It checks DNS, HTTP, the actual TCP port of the URL, TLS for HTTPS and known block-page stubs; when `proxy_url` is set it compares the direct path with an HTTP/SOCKS proxy route.
 
-- Status: active. Version 2.1.0, a Rust port (the earlier .NET version has been removed).
+- Status: active, version 2.2.0. Ready-made Windows x64 build: [lts-server.com](https://lts-server.com/projects/website-accessibility-monitor).
 - Stack: Rust 2024 (MSRV 1.88), tokio, reqwest, ratatui/crossterm; on Windows `windows-service` and `winping`.
-- Requirements: Rust 1.88+ (`rustup`); on Linux an OpenSSL development package (TLS uses `native-tls`).
+- Building from source: Rust 1.88+ (`rustup`); on Linux also an OpenSSL development package (TLS uses `native-tls`).
+- The interface and console messages are in Russian; this README and the [guide](docs/USER_GUIDE_EN.md) cover them in English.
 
 ### Building and Running
 
-```powershell
-cargo build --release --bins
-```
-
-Main interface:
+One program, `wam`, covers every mode:
 
 ```powershell
-.\target\release\SiteMonitor.exe
+cargo build --release
+.\target\release\wam.exe
 ```
 
-Compact interface:
-
-```powershell
-.\target\release\SiteMonitorLite.exe
-```
+| Command | What it does |
+|---|---|
+| `wam` | Terminal interface; `config.json` is created next to the program |
+| `wam --lite` | Compact interface for narrow windows and SSH/RDP |
+| `wam example.com` | One-shot check of the given addresses, `--json` for JSON output |
+| `wam --once` | One-shot check of the targets in `config.json` in the current folder |
+| `wam --watch` | Permanent background mode without an interface |
 
 `--config PATH` points to another settings file, `--help` prints the reference.
 
@@ -110,9 +109,9 @@ Five sections, switched with `1`-`5` or `Tab`:
 
 Main keys: `R` check now, `P` pause, `A` add a site, `D` delete (with confirmation), `T` text that must appear in the response, `Enter` details, `/` filter, `S` sort, `E` export CSV, `Ctrl+S` save settings, `Ctrl+R` reload `config.json`, `?` full help, `Q` quit. Hotkeys also work in the Russian layout, and long tokens and addresses can be pasted from the clipboard.
 
-`SiteMonitorLite` has the same features in a compact layout (no summary panel or side details) with less frequent redraws; it suits narrow windows and SSH/RDP. Minimum window size is 50 × 14.
+`--lite` has the same features in a compact layout (no summary panel or side details) with less frequent redraws. Minimum window size is 50 × 14.
 
-A status is always labelled with text; colour only repeats it. Colours are set in `color_theme` (`Green`, `DarkCyan`, `LightRed`, `#1e90ff` and so on); the `NO_COLOR` environment variable turns them off. If `config.json` is damaged, the app runs on defaults and refuses to save until the file is fixed.
+A status is always labelled with text; colour only repeats it. Colours are set in `color_theme` (`Green`, `LightRed`, `#1e90ff` and so on); the `NO_COLOR` environment variable turns them off. If `config.json` is damaged, the app runs on defaults and refuses to save until the file is fixed.
 
 Background mode, Windows service, Prometheus metrics, the config format and all statuses are covered in the [guide](docs/USER_GUIDE_EN.md).
 

@@ -1,11 +1,6 @@
 # Build output
-/[Bb]in/
-/[Oo]bj/
-
-# User-specific files
-*.user
-*.rsuser
-*.suo
+/target
+/dist
 
 # IDE directories
 .vs/
@@ -15,7 +10,7 @@
 # Logs and temporary files
 *.log
 *.tmp
-*.temp
+*.bak
 
 # OS-generated files
 Thumbs.db
@@ -25,9 +20,3 @@ Desktop.ini
 config.json
 uptime_history.json
 /results.csv
-*.bak
-
-
-# Added by cargo
-
-/target

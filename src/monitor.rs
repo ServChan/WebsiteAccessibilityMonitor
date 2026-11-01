@@ -177,7 +177,7 @@ fn webhook_client(config: &Config) -> Result<Client, String> {
 
 pub struct Monitor {
     config: Config,
-    script_dir: PathBuf,
+    data_dir: PathBuf,
     checker: Checker,
     webhook_client: Client,
     sites: Vec<Site>,
@@ -194,17 +194,17 @@ pub struct Monitor {
 }
 
 impl Monitor {
-    pub fn new(config: Config, script_dir: PathBuf) -> Result<Self, String> {
+    pub fn new(config: Config, data_dir: PathBuf) -> Result<Self, String> {
         let checker = Checker::new(&config)?;
         let webhook_client = webhook_client(&config)?;
         let uptime_history = if config.monitor_settings.uptime_enabled {
-            load_uptime_history(&config, &script_dir)
+            load_uptime_history(&config, &data_dir)
         } else {
             HashMap::new()
         };
         let mut monitor = Self {
             config,
-            script_dir,
+            data_dir,
             checker,
             webhook_client,
             sites: Vec::new(),
@@ -227,8 +227,8 @@ impl Monitor {
         &self.config
     }
 
-    pub fn script_dir(&self) -> &Path {
-        &self.script_dir
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     /// Applies a new configuration. State of sites that remain configured is kept. On a
@@ -247,7 +247,7 @@ impl Monitor {
         if !config.monitor_settings.uptime_enabled {
             self.uptime_history.clear();
         } else if self.uptime_history.is_empty() {
-            self.uptime_history = load_uptime_history(&config, &self.script_dir);
+            self.uptime_history = load_uptime_history(&config, &self.data_dir);
         }
         self.config = config;
         self.rebuild_sites();
@@ -495,14 +495,14 @@ impl Monitor {
     fn persist_cycle(&mut self) {
         let results = std::mem::take(&mut self.cycle_results);
         let config = self.config.clone();
-        let script_dir = self.script_dir.clone();
+        let data_dir = self.data_dir.clone();
         let history = self.uptime_history.clone();
         tokio::spawn(async move {
             if config.monitor_settings.uptime_enabled {
-                let (config, history, script_dir) =
-                    (config.clone(), history.clone(), script_dir.clone());
+                let (config, history, data_dir) =
+                    (config.clone(), history.clone(), data_dir.clone());
                 let saved = tokio::task::spawn_blocking(move || {
-                    save_uptime_history(&config, &history, &script_dir)
+                    save_uptime_history(&config, &history, &data_dir)
                 })
                 .await
                 .unwrap_or_else(|error| Err(format!("Сохранение истории прервано: {error}")));
@@ -510,13 +510,13 @@ impl Monitor {
                     notice::error(error);
                 }
             }
-            if config.monitor.logging_enabled
-                && let Err(error) = log_results_async(&results, &config, &script_dir).await
+            if config.logging.logging_enabled
+                && let Err(error) = log_results_async(&results, &config, &data_dir).await
             {
                 notice::error(error);
             }
             if config.csv_export.enabled
-                && let Err(error) = export_csv_async(&results, &config, &history, &script_dir).await
+                && let Err(error) = export_csv_async(&results, &config, &history, &data_dir).await
             {
                 notice::error(error);
             }
@@ -526,7 +526,7 @@ impl Monitor {
     /// Saves the uptime history synchronously, e.g. right before the process exits.
     pub fn save_history_now(&self) -> Result<(), String> {
         if self.config.monitor_settings.uptime_enabled {
-            save_uptime_history(&self.config, &self.uptime_history, &self.script_dir)
+            save_uptime_history(&self.config, &self.uptime_history, &self.data_dir)
         } else {
             Ok(())
         }
@@ -637,7 +637,7 @@ fn transition(previous: Option<&WebsiteResult>, current: &WebsiteResult) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MaintenanceWindow, get_default_config};
+    use crate::{MaintenanceWindow, default_config};
 
     fn result(url: &str, status: &str) -> WebsiteResult {
         let mut result = WebsiteResult::pending(url);
@@ -648,7 +648,7 @@ mod tests {
 
     fn monitor(urls: &[&str]) -> (Monitor, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.websites = urls.iter().map(|url| (*url).into()).collect();
         config.monitor_settings.uptime_enabled = true;
         let monitor = Monitor::new(config, directory.path().to_path_buf()).unwrap();

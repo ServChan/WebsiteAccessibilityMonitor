@@ -7,36 +7,46 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use website_accessibility_monitor::daemon::{self, DaemonOptions, EventLog};
 use website_accessibility_monitor::monitor::mark_maintenance;
+use website_accessibility_monitor::tui::{self, UiProfile};
 use website_accessibility_monitor::{
-    Checker, Config, WebsiteEntry, WebsiteResult, configured_sites, get_default_config,
+    Checker, Config, WebsiteEntry, WebsiteResult, configured_sites, default_config,
     load_or_create_config, normalize_target_url, status_description,
 };
 
 fn usage() -> String {
     format!(
-        "WebsiteAccessibilityMonitor {}\n\n\
+        "WebsiteAccessibilityMonitor (wam) {}\n\n\
+         Интерфейс в терминале:\n  \
+         wam [--config PATH] [--lite]\n\n\
          Одноразовая проверка:\n  \
-         website_accessibility_monitor [--config PATH] [--json] [URL ...]\n\n\
+         wam --once [--config PATH] [--json]\n  \
+         wam [--json] URL ...\n\n\
          Постоянный фоновый режим (для systemd, планировщика или консоли):\n  \
-         website_accessibility_monitor --watch [--config PATH] [--metrics АДРЕС] [--quiet] [--log-file PATH]\n\n\
+         wam --watch [--config PATH] [--metrics АДРЕС] [--quiet] [--log-file PATH]\n\n\
          Служба Windows (консоль от имени администратора):\n  \
-         website_accessibility_monitor --install-service [--config PATH] [--metrics АДРЕС]\n  \
-         website_accessibility_monitor --uninstall-service\n\n\
+         wam --install-service [--config PATH] [--metrics АДРЕС]\n  \
+         wam --uninstall-service\n\n\
          Параметры:\n  \
-         --config PATH     файл настроек (по умолчанию config.json в текущей папке)\n  \
+         --config PATH     файл настроек (по умолчанию config.json: для интерфейса рядом\n                    \
+         с программой, для остальных режимов в текущей папке)\n  \
+         --lite            компактный интерфейс для узких окон и SSH/RDP\n  \
+         --once            проверить цели из config.json один раз и завершиться\n  \
          --json            результат одноразовой проверки в JSON\n  \
          --metrics АДРЕС   отдавать метрики Prometheus, например 127.0.0.1:9898\n  \
          --quiet           не писать итоги циклов без сбоев\n  \
-         --log-file PATH   писать события в файл вместо консоли\n\n\
-         Без URL цели читаются из config.json. Схему можно не указывать: example.com\n\
-         проверяется как https://example.com/. Коды завершения одноразовой проверки:\n\
-         0 — все цели OK/WARN, 2 — есть недоступные, 1 — ошибка запуска.",
+         --log-file PATH   писать события в файл вместо консоли\n  \
+         -h, --help        показать эту справку\n  \
+         -V, --version     показать версию\n\n\
+         Схему адреса можно не указывать: example.com проверяется как https://example.com/.\n\
+         Коды завершения одноразовой проверки: 0 — все цели OK/WARN, 2 — есть недоступные,\n\
+         1 — ошибка запуска. Внутри интерфейса нажмите ? — список горячих клавиш.",
         env!("CARGO_PKG_VERSION")
     )
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
+    Interface,
     Once,
     Watch,
     Service,
@@ -46,7 +56,8 @@ enum Mode {
 
 struct Options {
     mode: Mode,
-    config_path: PathBuf,
+    config_path: Option<PathBuf>,
+    lite: bool,
     json: bool,
     metrics: Option<SocketAddr>,
     quiet: bool,
@@ -56,8 +67,9 @@ struct Options {
 
 fn parse_options() -> Result<Option<Options>, String> {
     let mut options = Options {
-        mode: Mode::Once,
-        config_path: PathBuf::from("config.json"),
+        mode: Mode::Interface,
+        config_path: None,
+        lite: false,
         json: false,
         metrics: None,
         quiet: false,
@@ -81,12 +93,14 @@ fn parse_options() -> Result<Option<Options>, String> {
                 return Ok(None);
             }
             "--json" => options.json = true,
+            "--lite" => options.lite = true,
+            "--once" => options.mode = Mode::Once,
             "--quiet" => options.quiet = true,
             "--watch" => options.mode = Mode::Watch,
             "--service" => options.mode = Mode::Service,
             "--install-service" => options.mode = Mode::InstallService,
             "--uninstall-service" => options.mode = Mode::UninstallService,
-            "--config" => options.config_path = PathBuf::from(value("--config")?),
+            "--config" => options.config_path = Some(PathBuf::from(value("--config")?)),
             "--log-file" => options.log_file = Some(PathBuf::from(value("--log-file")?)),
             "--metrics" => {
                 let raw = value("--metrics")?;
@@ -109,10 +123,37 @@ fn parse_options() -> Result<Option<Options>, String> {
             }
         }
     }
+    if options.mode == Mode::Interface && (options.json || !options.urls.is_empty()) {
+        options.mode = Mode::Once;
+    }
     if options.mode != Mode::Once && !options.urls.is_empty() {
         return Err("адреса в командной строке поддерживаются только для одноразовой проверки; для фонового режима укажите их в config.json".into());
     }
+    if options.mode == Mode::Interface
+        && (options.quiet || options.metrics.is_some() || options.log_file.is_some())
+    {
+        return Err("--metrics, --quiet и --log-file работают только вместе с --watch".into());
+    }
+    if options.mode != Mode::Interface && options.lite {
+        return Err("--lite относится только к интерфейсу в терминале".into());
+    }
     Ok(Some(options))
+}
+
+/// Directory of the executable: the interface keeps its files next to the program.
+fn program_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn config_path(options: &Options) -> PathBuf {
+    options
+        .config_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("config.json"))
 }
 
 /// Absolute path, so that a service started from `System32` finds the same file.
@@ -120,16 +161,35 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn daemon_options(options: &Options) -> DaemonOptions {
-    let config_path = absolute(&options.config_path);
-    let script_dir = config_path
+/// Relative paths in the configuration resolve next to the config file.
+fn data_dir(config_path: &Path) -> PathBuf {
+    config_path
         .parent()
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn run_interface(options: Options) -> Result<ExitCode, String> {
+    let config_path = absolute(
+        &options
+            .config_path
+            .unwrap_or_else(|| program_dir().join("config.json")),
+    );
+    let profile = if options.lite {
+        UiProfile::Lite
+    } else {
+        UiProfile::Full
+    };
+    tui::run(profile, data_dir(&config_path), config_path).map(|()| ExitCode::SUCCESS)
+}
+
+fn daemon_options(options: &Options) -> DaemonOptions {
+    let config_path = absolute(&config_path(options));
+    let data_dir = data_dir(&config_path);
     DaemonOptions {
         log_file: options.log_file.as_deref().map(absolute),
         config_path,
-        script_dir,
+        data_dir,
         metrics: options.metrics,
         quiet: options.quiet,
     }
@@ -182,9 +242,9 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 
 fn run_once(options: Options) -> Result<ExitCode, String> {
     let config = if options.urls.is_empty() {
-        load_or_create_config(&options.config_path)
+        load_or_create_config(&config_path(&options))
     } else {
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.websites = options
             .urls
             .iter()
@@ -194,6 +254,11 @@ fn run_once(options: Options) -> Result<ExitCode, String> {
         config.monitor_settings.ping_enabled = false;
         config
     };
+    if configured_sites(&config).is_empty() {
+        return Err(
+            "нет целей: добавьте сайты в config.json или укажите адреса в командной строке".into(),
+        );
+    }
     let runtime = runtime()?;
     let outcome = runtime.block_on(check_all(config));
     // Blocking ICMP probes may still be waiting for their timeout; do not hang on exit.
@@ -242,7 +307,7 @@ fn install_service(options: Options) -> Result<ExitCode, String> {
     let log_file = daemon_options
         .log_file
         .clone()
-        .unwrap_or_else(|| daemon_options.script_dir.join("wam-service.log"));
+        .unwrap_or_else(|| daemon_options.data_dir.join("wam-service.log"));
     let mut arguments = vec![
         OsString::from("--config"),
         daemon_options.config_path.clone().into_os_string(),
@@ -297,6 +362,7 @@ fn main() -> ExitCode {
         }
     };
     let outcome = match options.mode {
+        Mode::Interface => run_interface(options),
         Mode::Once => run_once(options),
         Mode::Watch => run_watch(options),
         #[cfg(windows)]

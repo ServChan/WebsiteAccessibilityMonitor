@@ -10,25 +10,16 @@ use crate::model::{
 use crate::notice;
 use crate::storage::write_atomic;
 
-pub fn get_default_config() -> Config {
+pub fn default_config() -> Config {
     Config {
         monitor_settings: Default::default(),
         websites: vec![
-            "https://ya.ru".into(),
-            "https://google.com".into(),
             "https://example.com".into(),
-            "https://vk.com".into(),
-            "https://youtube.com".into(),
             "https://github.com".into(),
-            "https://steamcommunity.com".into(),
-            "https://store.steampowered.com".into(),
-            "https://twitch.tv".into(),
-            "https://reddit.com".into(),
             "https://wikipedia.org".into(),
-            "https://x.com".into(),
         ],
         website_groups: Vec::new(),
-        monitor: Default::default(),
+        logging: Default::default(),
         webhooks: Default::default(),
         color_theme: Default::default(),
         csv_export: Default::default(),
@@ -155,7 +146,7 @@ fn sanitize_config(mut config: Config, defaults: &Config, report: bool) -> Confi
         settings.proxy_url.clear();
     }
 
-    config.monitor.log_max_size_mb = config.monitor.log_max_size_mb.clamp(1, 10_240);
+    config.logging.log_max_size_mb = config.logging.log_max_size_mb.clamp(1, 10_240);
     config.webhooks.min_failures_before_alert =
         config.webhooks.min_failures_before_alert.clamp(1, 1_000);
     for value in [
@@ -208,9 +199,6 @@ fn sanitize_config(mut config: Config, defaults: &Config, report: bool) -> Confi
         true
     });
 
-    if config.websites.is_empty() && config.website_groups.is_empty() {
-        config.websites = defaults.websites.clone();
-    }
     config
 }
 
@@ -219,7 +207,7 @@ fn sanitize_config(mut config: Config, defaults: &Config, report: bool) -> Confi
 /// `Err` means the file exists but cannot be used; it is left untouched so the user can fix
 /// it, and callers must not overwrite it with defaults.
 pub fn try_load_config(path: &Path) -> Result<Config, String> {
-    let defaults = get_default_config();
+    let defaults = default_config();
     if !path.exists() {
         if let Err(error) = save_config(&defaults, path) {
             notice::error(error);
@@ -244,14 +232,14 @@ pub fn try_load_config(path: &Path) -> Result<Config, String> {
 pub fn load_or_create_config(path: &Path) -> Config {
     try_load_config(path).unwrap_or_else(|error| {
         notice::error(format!("{error}. Используются настройки по умолчанию."));
-        get_default_config()
+        default_config()
     })
 }
 
 /// Sanitizes and atomically writes the configuration. Returns what was actually written,
 /// or a user-facing error message.
 pub fn save_config(config: &Config, path: &Path) -> Result<Config, String> {
-    let sanitized = sanitize_config(config.clone(), &get_default_config(), false);
+    let sanitized = sanitize_config(config.clone(), &default_config(), false);
     let json = serde_json::to_vec_pretty(&sanitized)
         .map_err(|error| format!("Не удалось сериализовать настройки: {error}"))?;
     write_atomic(path, &json)
@@ -382,8 +370,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_and_group_sites_are_combined() {
-        let mut config = get_default_config();
+    fn top_level_and_group_sites_are_combined() {
+        let mut config = default_config();
         config.websites = vec!["https://example.com".into()];
         config.website_groups = vec![crate::WebsiteGroup {
             name: "API".into(),
@@ -399,7 +387,7 @@ mod tests {
 
     #[test]
     fn per_site_options_reach_the_target() {
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.monitor_settings.slow_threshold_ms = 1_000;
         config.websites = vec![
             "https://a.example/".into(),
@@ -476,7 +464,7 @@ mod tests {
 
     #[test]
     fn targets_are_added_once_and_removed_from_groups() {
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.websites = vec!["https://example.com/".into()];
         config.website_groups = vec![crate::WebsiteGroup {
             name: "API".into(),
@@ -494,6 +482,30 @@ mod tests {
         assert!(remove_target(&mut config, "https://example.org/"));
         assert!(!remove_target(&mut config, "https://missing.example/"));
         assert_eq!(config.websites, vec!["https://example.com/".into()]);
+    }
+
+    #[test]
+    fn removing_the_last_site_does_not_bring_defaults_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut config = default_config();
+        config.websites.clear();
+
+        let saved = save_config(&config, &path).unwrap();
+
+        assert!(saved.websites.is_empty());
+        assert!(load_or_create_config(&path).websites.is_empty());
+    }
+
+    #[test]
+    fn keys_of_earlier_versions_are_still_read() {
+        let config: Config = serde_json::from_str(
+            r#"{"Monitor": {"logging_enabled": true}, "color_theme": {"banner": "Blue"}}"#,
+        )
+        .unwrap();
+
+        assert!(config.logging.logging_enabled);
+        assert_eq!(config.color_theme.accent, "Blue");
     }
 
     #[test]

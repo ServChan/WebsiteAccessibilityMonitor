@@ -13,8 +13,8 @@ use super::view::ViewState;
 pub(crate) use crate::monitor::{CycleSummary, ScanProgress, Site, Summary, plural};
 use crate::monitor::{Monitor, MonitorEvent, ScanMessage};
 use crate::{
-    Config, Health, Notice, NoticeLevel, WebsiteResult, add_website, export_csv_async,
-    get_default_config, normalize_target_url, redact_proxy_url, remove_target, save_config,
+    Config, Health, Notice, NoticeLevel, WebsiteResult, add_website, default_config,
+    export_csv_async, normalize_target_url, redact_proxy_url, remove_target, save_config,
     set_expect_text, status_description, try_load_config,
 };
 
@@ -557,12 +557,12 @@ pub(crate) struct App {
 impl App {
     pub(crate) fn new(
         profile: UiProfile,
-        script_dir: PathBuf,
+        data_dir: PathBuf,
         config_path: PathBuf,
     ) -> Result<Self, String> {
         let (config, load_error) = match try_load_config(&config_path) {
             Ok(config) => (config, None),
-            Err(error) => (get_default_config(), Some(error)),
+            Err(error) => (default_config(), Some(error)),
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut app = Self {
@@ -587,7 +587,7 @@ impl App {
             view: ViewState::default(),
             tx,
             rx: Some(rx),
-            monitor: Monitor::new(config, script_dir)?,
+            monitor: Monitor::new(config, data_dir)?,
         };
         if let Some(error) = load_error {
             app.log(
@@ -1150,13 +1150,6 @@ impl App {
         let Some(site) = self.selected_site() else {
             return;
         };
-        if self.sites().len() == 1 {
-            self.set_toast(
-                "Это последний сайт. Сначала добавьте другой (A), затем удалите этот.",
-                ToastKind::Warning,
-            );
-            return;
-        }
         self.modal = Some(Modal::Confirm(Confirm::RemoveSite {
             identity: site.identity.clone(),
             url: site.target.url.clone(),
@@ -1196,11 +1189,11 @@ impl App {
         }
         let config = self.config().clone();
         let history = self.monitor.uptime_history().clone();
-        let script_dir = self.monitor.script_dir().to_path_buf();
+        let data_dir = self.monitor.data_dir().to_path_buf();
         let tx = self.tx.clone();
         self.set_toast("Сохраняем CSV…", ToastKind::Info);
         tokio::spawn(async move {
-            let outcome = export_csv_async(&results, &config, &history, &script_dir).await;
+            let outcome = export_csv_async(&results, &config, &history, &data_dir).await;
             let (ok, text) = match outcome {
                 Ok(path) => (
                     true,
@@ -1321,7 +1314,7 @@ impl App {
                     (proxy.clone(), false)
                 }
             }
-            SettingField::LogPath => (config.monitor.log_file_path.clone(), false),
+            SettingField::LogPath => (config.logging.log_file_path.clone(), false),
             SettingField::CsvPath => (config.csv_export.file_path.clone(), false),
             SettingField::TelegramChat => (config.webhooks.telegram_chat_id.clone(), false),
             SettingField::Doh => (config.monitor_settings.doh_server.clone(), false),
@@ -1364,7 +1357,7 @@ impl App {
             SettingField::LogPath | SettingField::CsvPath if value.is_empty() => {
                 return Err("Укажите имя файла, например logs/monitor.log.".into());
             }
-            SettingField::LogPath => draft.monitor.log_file_path = value,
+            SettingField::LogPath => draft.logging.log_file_path = value,
             SettingField::CsvPath => draft.csv_export.file_path = value,
             SettingField::TelegramToken => draft.webhooks.telegram_bot_token = value,
             SettingField::TelegramChat => draft.webhooks.telegram_chat_id = value,
@@ -1401,7 +1394,7 @@ impl App {
     }
 
     fn reset_setting(&mut self, field: SettingField) {
-        let defaults = get_default_config();
+        let defaults = default_config();
         let draft = &mut self.settings_draft;
         match field {
             SettingField::TelegramToken => draft.webhooks.telegram_bot_token.clear(),
@@ -1409,7 +1402,7 @@ impl App {
             SettingField::DiscordUrl => draft.webhooks.discord_webhook_url.clear(),
             SettingField::SlackUrl => draft.webhooks.slack_webhook_url.clear(),
             SettingField::Proxy => draft.monitor_settings.proxy_url.clear(),
-            SettingField::LogPath => draft.monitor.log_file_path = defaults.monitor.log_file_path,
+            SettingField::LogPath => draft.logging.log_file_path = defaults.logging.log_file_path,
             SettingField::CsvPath => draft.csv_export.file_path = defaults.csv_export.file_path,
             SettingField::Doh => {
                 draft.monitor_settings.doh_server = defaults.monitor_settings.doh_server;
@@ -1436,7 +1429,7 @@ impl App {
             SettingField::Retries => settings.retries_max = small(value),
             SettingField::Concurrency => settings.max_concurrency = value as usize,
             SettingField::BodyLimit => settings.response_body_limit_kb = value as usize,
-            SettingField::LogMaxSize => config.monitor.log_max_size_mb = value,
+            SettingField::LogMaxSize => config.logging.log_max_size_mb = value,
             SettingField::MinFailures => config.webhooks.min_failures_before_alert = small(value),
             SettingField::SlowThreshold => settings.slow_threshold_ms = value,
             SettingField::CertWarnDays => settings.cert_warn_days = small(value),
@@ -1452,8 +1445,8 @@ impl App {
             SettingField::Diagnostics => &mut config.monitor_settings.diagnostics_enabled,
             SettingField::Ping => &mut config.monitor_settings.ping_enabled,
             SettingField::Uptime => &mut config.monitor_settings.uptime_enabled,
-            SettingField::Logging => &mut config.monitor.logging_enabled,
-            SettingField::LogRotate => &mut config.monitor.log_rotate_daily,
+            SettingField::Logging => &mut config.logging.logging_enabled,
+            SettingField::LogRotate => &mut config.logging.log_rotate_daily,
             SettingField::Csv => &mut config.csv_export.enabled,
             SettingField::Webhooks => &mut config.webhooks.enabled,
             SettingField::NotifyDown => &mut config.webhooks.notify_on_down,
@@ -1551,7 +1544,7 @@ fn number_of(config: &Config, field: SettingField) -> Option<u64> {
         SettingField::Retries => u64::from(settings.retries_max),
         SettingField::Concurrency => settings.max_concurrency as u64,
         SettingField::BodyLimit => settings.response_body_limit_kb as u64,
-        SettingField::LogMaxSize => config.monitor.log_max_size_mb,
+        SettingField::LogMaxSize => config.logging.log_max_size_mb,
         SettingField::MinFailures => u64::from(config.webhooks.min_failures_before_alert),
         SettingField::SlowThreshold => settings.slow_threshold_ms,
         SettingField::CertWarnDays => u64::from(settings.cert_warn_days),
@@ -1566,8 +1559,8 @@ fn toggle_of(config: &Config, field: SettingField) -> bool {
         SettingField::Diagnostics => config.monitor_settings.diagnostics_enabled,
         SettingField::Ping => config.monitor_settings.ping_enabled,
         SettingField::Uptime => config.monitor_settings.uptime_enabled,
-        SettingField::Logging => config.monitor.logging_enabled,
-        SettingField::LogRotate => config.monitor.log_rotate_daily,
+        SettingField::Logging => config.logging.logging_enabled,
+        SettingField::LogRotate => config.logging.log_rotate_daily,
         SettingField::Csv => config.csv_export.enabled,
         SettingField::Webhooks => config.webhooks.enabled,
         SettingField::NotifyDown => config.webhooks.notify_on_down,
@@ -1606,7 +1599,7 @@ fn display_value(config: &Config, field: SettingField) -> String {
         FieldKind::Secret => secret_label(secret_of(config, field)),
         FieldKind::Text => {
             let value = match field {
-                SettingField::LogPath => config.monitor.log_file_path.clone(),
+                SettingField::LogPath => config.logging.log_file_path.clone(),
                 SettingField::CsvPath => config.csv_export.file_path.clone(),
                 SettingField::TelegramChat => config.webhooks.telegram_chat_id.clone(),
                 SettingField::Proxy => redact_proxy_url(&config.monitor_settings.proxy_url),
@@ -1673,14 +1666,19 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn test_app() -> (App, tempfile::TempDir) {
+        test_app_with(|_| {})
+    }
+
+    pub(crate) fn test_app_with(configure: impl FnOnce(&mut Config)) -> (App, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("config.json");
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.websites = vec![
             "https://a.example/".into(),
             "https://b.example/".into(),
             "https://c.example/".into(),
         ];
+        configure(&mut config);
         save_config(&config, &config_path).unwrap();
         let app = App::new(UiProfile::Full, directory.path().to_path_buf(), config_path).unwrap();
         (app, directory)
@@ -1937,7 +1935,7 @@ pub(crate) mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("config.json");
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.websites = vec![crate::WebsiteEntry {
             expect_text: "welcome".into(),
             ..crate::WebsiteEntry::new(format!("http://{address}/"))

@@ -21,7 +21,7 @@ use crate::{NoticeLevel, rotate_log_if_needed, set_notice_sink, try_load_config}
 pub struct DaemonOptions {
     pub config_path: PathBuf,
     /// Base for relative paths in the configuration (history, logs, CSV).
-    pub script_dir: PathBuf,
+    pub data_dir: PathBuf,
     /// Address for `/metrics`, e.g. `127.0.0.1:9898`.
     pub metrics: Option<SocketAddr>,
     /// Do not report routine cycle summaries, only problems.
@@ -106,7 +106,7 @@ pub async fn run(
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), String> {
     let config = try_load_config(&options.config_path)?;
-    let mut monitor = Monitor::new(config, options.script_dir.clone())?;
+    let mut monitor = Monitor::new(config, options.data_dir.clone())?;
     let snapshot: Snapshot = Arc::new(RwLock::new(String::new()));
     refresh(&snapshot, &monitor);
 
@@ -231,7 +231,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
-    use crate::{get_default_config, save_config};
+    use crate::{default_config, save_config};
 
     #[tokio::test]
     async fn checks_sites_serves_metrics_and_stops_cleanly() {
@@ -252,7 +252,7 @@ mod tests {
         });
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("config.json");
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.websites = vec![format!("http://{site_address}/").as_str().into()];
         config.monitor_settings.ping_enabled = false;
         config.monitor_settings.timeout = 2;
@@ -268,7 +268,7 @@ mod tests {
         let log_path = directory.path().join("service.log");
         let options = DaemonOptions {
             config_path,
-            script_dir: directory.path().to_path_buf(),
+            data_dir: directory.path().to_path_buf(),
             metrics: Some(metrics_address),
             quiet: false,
             log_file: Some(log_path.clone()),
@@ -310,7 +310,7 @@ mod tests {
         fs::write(&config_path, "{ broken").unwrap();
         let options = DaemonOptions {
             config_path,
-            script_dir: directory.path().to_path_buf(),
+            data_dir: directory.path().to_path_buf(),
             metrics: None,
             quiet: true,
             log_file: None,

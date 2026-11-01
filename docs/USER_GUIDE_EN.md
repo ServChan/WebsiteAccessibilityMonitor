@@ -1,22 +1,6 @@
-# WebsiteAccessibilityMonitor: User Guide
+# WebsiteAccessibilityMonitor (wam): User Guide
 
 [Русская версия](USER_GUIDE_RU.md)
-
-## What Changed in 2.1
-
-- Diagnostics no longer call any timeout a block. A `*_BLOCK` status is set only with an extra signal: the direct path fails while the same URL works through the configured proxy. It remains a technical hypothesis, not legal proof.
-- The system DNS is compared with DoH for A and AAAA. Disjoint answers are marked `dns_anomaly` but are not treated as blocking by themselves: CDNs and geo-distributed DNS often return different addresses legitimately.
-- TCP/TLS checks use the scheme and port of the original URL, try the available IPv4/IPv6 addresses and have a real async timeout.
-- SOCKS4/SOCKS5 and HTTP proxies work through `proxy_url`. The direct client never uses the system proxy, which keeps the route comparison honest.
-- `HEAD` falls back to `GET` on 405/501 without spending a retry. Temporary HTTP 408/425/429/500-504 are retried.
-- The response body is read only up to a set limit; the number of concurrent checks is limited.
-- The old `websites` list and `website_groups` work together. Invalid URLs and headers are skipped, and a damaged `config.json` is no longer overwritten.
-- History keeps a day of data with regard to the interval, the log keeps subfolders, CSV has diagnostic fields, notifications check the webhook's HTTP response.
-- `SiteMonitor` and `SiteMonitorLite` share one full-screen ratatui interface instead of two copies of manual drawing: sites are added and removed in the app, settings are validated while editing, and save or notification errors go to Events without breaking the screen.
-- Stub detection no longer fires on ordinary pages with words like "blocked" and no longer misses a stub when the body limit cuts a UTF-8 character.
-- IPv6 literal addresses (`http://[::1]:8080/`) are checked correctly, the system DNS is bound by the request timeout, and the Telegram token and webhook URLs stay out of error texts.
-- Expected-text check, slow-response threshold, TLS certificate and domain registration expiry, maintenance windows.
-- Permanent `--watch` background mode for systemd and the console, a Windows service and Prometheus metrics.
 
 ## What Is Checked Besides Availability
 
@@ -35,19 +19,19 @@ Warnings (`WARN`, `SLOW`, `CERT_EXPIRING`, `DOMAIN_EXPIRING`) mean the site is a
 A one-shot check for a scheduler, CI or PowerShell:
 
 ```powershell
-.\target\release\website_accessibility_monitor.exe --json https://example.com https://example.net
+.\target\release\wam.exe --json https://example.com https://example.net
 ```
 
-Without URLs the command reads `config.json` from the current folder. The scheme is optional: `example.com` is checked as `https://example.com/`. Exit code `0` means all targets are `OK`/`WARN`, `2` means some are down, `1` is a startup error such as an invalid URL. `--config PATH` selects another config file.
+To check the targets from `config.json` in the current folder, use `wam --once`. The scheme is optional: `example.com` is checked as `https://example.com/`. Exit code `0` means all targets are `OK`/`WARN`, `2` means some are down, `1` is a startup error such as an invalid URL. `--config PATH` selects another config file.
 
-On Windows `Start.bat` and `StartLite.bat` are also available. On first start `config.json` is created next to the executable.
+Run `wam` without arguments for the interface; its `config.json` is created next to the executable on first start.
 
 ## Background Mode, Service and Metrics
 
-`--watch` checks sites continuously without an interface: on schedule, with notifications, uptime history, log and CSV, as in `SiteMonitor`. Changes to `config.json` are picked up without a restart. Events go to the console (or a file through `--log-file`), `--quiet` hides clean cycle summaries. Stop with `Ctrl+C` or `SIGTERM`; uptime history is saved.
+`--watch` checks sites continuously without an interface: on schedule, with notifications, uptime history, log and CSV, as in the interface. Changes to `config.json` are picked up without a restart. Events go to the console (or a file through `--log-file`), `--quiet` hides clean cycle summaries. Stop with `Ctrl+C` or `SIGTERM`; uptime history is saved.
 
 ```powershell
-.\target\release\website_accessibility_monitor.exe --watch --config C:\WAM\config.json --metrics 127.0.0.1:9898
+.\target\release\wam.exe --watch --config C:\WAM\config.json --metrics 127.0.0.1:9898
 ```
 
 Relative paths from the settings (history, log, CSV) are resolved from the folder that holds `config.json`.
@@ -55,7 +39,7 @@ Relative paths from the settings (history, log, CSV) are resolved from the folde
 **Windows service.** From a console run as administrator:
 
 ```powershell
-.\target\release\website_accessibility_monitor.exe --install-service --config C:\WAM\config.json --metrics 127.0.0.1:9898
+.\target\release\wam.exe --install-service --config C:\WAM\config.json --metrics 127.0.0.1:9898
 ```
 
 The `WebsiteAccessibilityMonitor` service starts at once and then automatically with Windows. Its event log is `wam-service.log` next to `config.json` (or the `--log-file` path). Remove it with `--uninstall-service`.
@@ -121,7 +105,7 @@ All site metrics carry `url` and `group` labels. Sample alert rules: [deploy/pro
       ]
     }
   ],
-  "Monitor": {
+  "logging": {
     "logging_enabled": true,
     "log_file_path": "logs/monitor.log",
     "log_max_size_mb": 10,
@@ -192,13 +176,11 @@ CI (`.github/workflows/rust.yml`) runs these checks on Windows and Linux.
 
 | Path | Purpose |
 |---|---|
-| `src/main.rs` | `website_accessibility_monitor` binary: headless check (`--json`), `--watch`, Windows service, `--metrics` |
-| `src/bin/sitemonitor.rs`, `src/bin/sitemonitor_lite.rs` | `SiteMonitor` and `SiteMonitorLite` binaries (TUI) |
+| `src/main.rs` | `wam` binary: mode selection, one-shot check, `--watch`, Windows service, `--metrics` |
 | `src/tui/` | ratatui interface |
 | `src/monitor.rs`, `src/network.rs`, `src/notice.rs`, `src/expiry.rs` | Checks, diagnostics, stubs, certificate and domain dates |
 | `src/config.rs`, `src/model.rs`, `src/storage.rs` | `config.json` format and saving, history, log, CSV |
 | `src/daemon.rs`, `src/service.rs`, `src/metrics.rs`, `src/webhooks.rs` | Background mode, Windows service, Prometheus, notifications |
 | `deploy/` | systemd unit and sample Prometheus alert rules |
-| `Start.bat`, `StartLite.bat` | Launch the TUI on Windows (they build the release binary with cargo if missing) |
 
 `config.json`, `uptime_history.json` and `results.csv` are local data and are in `.gitignore`.

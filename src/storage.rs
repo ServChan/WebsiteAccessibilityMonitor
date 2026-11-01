@@ -43,16 +43,16 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Relative paths in the configuration are resolved against the program directory.
-pub fn resolve_data_path(configured: &str, script_dir: &Path) -> PathBuf {
+pub fn resolve_data_path(configured: &str, data_dir: &Path) -> PathBuf {
     let path = PathBuf::from(configured);
     if path.is_absolute() {
         path
     } else {
-        script_dir.join(path)
+        data_dir.join(path)
     }
 }
 
-pub fn get_current_log_path(base_path: &str, rotate_daily: bool, script_dir: &Path) -> PathBuf {
+pub fn current_log_path(base_path: &str, rotate_daily: bool, data_dir: &Path) -> PathBuf {
     let mut relative = PathBuf::from(base_path);
     if rotate_daily {
         let date = Local::now().format("%Y-%m-%d");
@@ -69,7 +69,7 @@ pub fn get_current_log_path(base_path: &str, rotate_daily: bool, script_dir: &Pa
     if relative.is_absolute() {
         relative
     } else {
-        script_dir.join(relative)
+        data_dir.join(relative)
     }
 }
 
@@ -112,12 +112,12 @@ struct LogRecord<'a> {
 pub async fn log_results_async(
     results: &[WebsiteResult],
     config: &Config,
-    script_dir: &Path,
+    data_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let path = get_current_log_path(
-        &config.monitor.log_file_path,
-        config.monitor.log_rotate_daily,
-        script_dir,
+    let path = current_log_path(
+        &config.logging.log_file_path,
+        config.logging.log_rotate_daily,
+        data_dir,
     );
     let record = LogRecord {
         timestamp: Local::now().to_rfc3339(),
@@ -126,7 +126,7 @@ pub async fn log_results_async(
     let mut json = serde_json::to_vec(&record)
         .map_err(|error| format!("Не удалось сериализовать запись журнала: {error}"))?;
     json.push(b'\n');
-    let max_size = config.monitor.log_max_size_mb;
+    let max_size = config.logging.log_max_size_mb;
 
     let result = tokio::task::spawn_blocking(move || -> io::Result<PathBuf> {
         if let Some(parent) = path
@@ -183,9 +183,9 @@ pub async fn export_csv_async(
     results: &[WebsiteResult],
     config: &Config,
     uptime_history: &HashMap<String, Vec<bool>>,
-    script_dir: &Path,
+    data_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let path = resolve_data_path(&config.csv_export.file_path, script_dir);
+    let path = resolve_data_path(&config.csv_export.file_path, data_dir);
     let rows: Vec<(WebsiteResult, Option<f64>)> = results
         .iter()
         .map(|item| {
@@ -253,8 +253,8 @@ fn uptime_capacity(config: &Config) -> usize {
         .unwrap_or_else(|| history_capacity(config.monitor_settings.interval))
 }
 
-pub fn load_uptime_history(config: &Config, script_dir: &Path) -> HashMap<String, Vec<bool>> {
-    let path = resolve_data_path(&config.uptime_history_path, script_dir);
+pub fn load_uptime_history(config: &Config, data_dir: &Path) -> HashMap<String, Vec<bool>> {
+    let path = resolve_data_path(&config.uptime_history_path, data_dir);
     let capacity = uptime_capacity(config);
     let Ok(content) = fs::read_to_string(&path) else {
         return HashMap::new();
@@ -279,9 +279,9 @@ pub fn load_uptime_history(config: &Config, script_dir: &Path) -> HashMap<String
 pub fn save_uptime_history(
     config: &Config,
     history: &HashMap<String, Vec<bool>>,
-    script_dir: &Path,
+    data_dir: &Path,
 ) -> Result<(), String> {
-    let path = resolve_data_path(&config.uptime_history_path, script_dir);
+    let path = resolve_data_path(&config.uptime_history_path, data_dir);
     let capacity = uptime_capacity(config);
     let now = Local::now().to_rfc3339();
     let sites = history
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn daily_rotation_keeps_parent_directory() {
-        let path = get_current_log_path("logs/monitor.log", true, Path::new("C:/app"));
+        let path = current_log_path("logs/monitor.log", true, Path::new("C:/app"));
         assert_eq!(path.parent().unwrap(), Path::new("C:/app/logs"));
         assert!(
             path.file_name()
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn uptime_history_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let config = crate::get_default_config();
+        let config = crate::default_config();
         let history = HashMap::from([("https://example.com".to_string(), vec![true, false])]);
 
         save_uptime_history(&config, &history, dir.path()).unwrap();
@@ -371,7 +371,7 @@ mod tests {
     #[tokio::test]
     async fn csv_export_reports_written_path() {
         let dir = tempfile::tempdir().unwrap();
-        let config = crate::get_default_config();
+        let config = crate::default_config();
 
         let path = export_csv_async(&[], &config, &HashMap::new(), dir.path())
             .await

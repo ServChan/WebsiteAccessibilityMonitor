@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.0 — 2026-11
+
+- **Одна программа / One program:** `SiteMonitor`, `SiteMonitorLite` и `website_accessibility_monitor` объединены в `wam`: без параметров открывается интерфейс, `--lite` включает компактный вид, `--once` проверяет цели из `config.json` один раз. `Start.bat` и `StartLite.bat` удалены. / The three programs are merged into `wam`: no arguments open the interface, `--lite` selects the compact view, `--once` runs a single check of the `config.json` targets. The `.bat` launchers are gone.
+- **Настройки / Settings:** раздел `Monitor` переименован в `logging`, цвет `banner` в `accent`, неиспользуемый цвет `header` убран; старые ключи читаются. История аптайма включена по умолчанию, в новом `config.json` три примера сайтов вместо двенадцати. / `Monitor` is now `logging`, the `banner` colour is `accent`, the unused `header` colour is removed; old keys are still read. Uptime history is on by default, a new `config.json` has three sample sites instead of twelve.
+- **Пустой список / Empty list:** можно удалить последний сайт, настройки без сайтов больше не подменяются списком по умолчанию, интерфейс подсказывает, как добавить первый. / The last site can be removed, a config with no sites is no longer replaced with the default list, and the interface shows how to add the first one.
+- **Данные рядом с настройками / Data next to the config:** с `--config` интерфейс хранит историю, журнал и CSV рядом с указанным файлом, как и `--watch`. / With `--config` the interface keeps history, log and CSV next to that file, as `--watch` does.
 ## 2.1.0 — 2026-10
 
 - **Порт на Rust завершён / Rust port finished:** общий интерфейс ratatui, фоновый режим `--watch`, служба Windows, метрики Prometheus. / Shared ratatui interface, `--watch` background mode, Windows service, Prometheus metrics.

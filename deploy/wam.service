@@ -1,7 +1,7 @@
 # systemd unit for the WAM background monitor.
 #
 #   sudo useradd --system --home /var/lib/wam --create-home wam
-#   sudo install -m 755 website_accessibility_monitor /usr/local/bin/
+#   sudo install -m 755 wam /usr/local/bin/
 #   sudo cp wam.service /etc/systemd/system/ && sudo systemctl daemon-reload
 #   sudo systemctl enable --now wam
 #   journalctl -u wam -f
@@ -19,7 +19,7 @@ Type=simple
 User=wam
 Group=wam
 WorkingDirectory=/var/lib/wam
-ExecStart=/usr/local/bin/website_accessibility_monitor --watch --config /var/lib/wam/config.json --metrics 127.0.0.1:9898
+ExecStart=/usr/local/bin/wam --watch --config /var/lib/wam/config.json --metrics 127.0.0.1:9898
 Restart=on-failure
 RestartSec=10
 

@@ -925,7 +925,7 @@ mod tests {
     }
 
     fn test_config() -> Config {
-        let mut config = crate::get_default_config();
+        let mut config = crate::default_config();
         config.monitor_settings.timeout = 2;
         config.monitor_settings.ping_enabled = false;
         config.monitor_settings.doh_server = "https://invalid.invalid/dns-query".into();

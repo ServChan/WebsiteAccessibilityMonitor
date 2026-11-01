@@ -271,7 +271,7 @@ mod tests {
 
     use super::*;
     use crate::monitor::ScanMessage;
-    use crate::{WebsiteResult, get_default_config};
+    use crate::{WebsiteResult, default_config};
 
     #[test]
     fn labels_are_escaped() {
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn renders_site_metrics() {
         let directory = tempfile::tempdir().unwrap();
-        let mut config = get_default_config();
+        let mut config = default_config();
         config.websites = vec!["https://a.example/".into()];
         let mut monitor =
             crate::monitor::Monitor::new(config, directory.path().to_path_buf()).unwrap();
