@@ -1,10 +1,24 @@
 # WebsiteAccessibilityMonitor (WAM)
 
 [![CI](https://img.shields.io/badge/CI-Rustfmt%20%7C%20Clippy%20%7C%20Tests-brightgreen?style=flat-square)](.github/workflows/rust.yml)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat-square)](#сборка-и-запуск)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat-square)](README.md)
 [![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange?style=flat-square&logo=rust)](Cargo.toml)
 [![Version](https://img.shields.io/badge/Version-2.1.0-purple?style=flat-square)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
+
+Console uptime monitor for HTTP/HTTPS resources: checks DNS, HTTP, the real TCP port, TLS and block-page stubs, and compares the direct path with a proxy route to tell outages from likely blocking.
+
+**Руководство / User guide:** [Русский](docs/USER_GUIDE_RU.md) · [English](docs/USER_GUIDE_EN.md)
+
+![Overview screen](docs/images/overview.png)
+
+![Uptime screen](docs/images/uptime.png)
+
+![Settings screen](docs/images/settings.png)
+
+## Русский
+
+### Что это
 
 WAM — консольный монитор доступности HTTP/HTTPS-ресурсов. Он проверяет DNS, HTTP, фактический TCP-порт URL, TLS для HTTPS, известные страницы-заглушки и, при явной настройке, сравнивает прямой путь с HTTP/SOCKS-прокси.
 
@@ -12,25 +26,7 @@ WAM — консольный монитор доступности HTTP/HTTPS-р
 - Стек: Rust 2024 (MSRV 1.88), tokio, reqwest, ratatui/crossterm; на Windows — `windows-service`, `winping`.
 - Требования: Rust 1.88+ (`rustup`), для сборки на Linux — OpenSSL dev-пакет (TLS через `native-tls`).
 
-[English version below](#english)
-
-## Что изменилось в 2.1
-
-- Диагностика больше не объявляет любой таймаут «блокировкой». Статус `*_BLOCK` выставляется только при дополнительном сигнале: прямой путь не работает, а тот же URL через настроенный прокси доступен. Это всё равно техническая гипотеза, не юридическое доказательство.
-- Системный DNS сравнивается с DoH по A и AAAA. Непересекающиеся ответы отмечаются как `dns_anomaly`, но сами по себе не считаются блокировкой: CDN и геораспределённый DNS часто законно возвращают разные адреса.
-- TCP/TLS-проверки используют схему и порт исходного URL, перебирают доступные IPv4/IPv6-адреса и имеют реальный асинхронный таймаут.
-- SOCKS4/SOCKS5 и HTTP-прокси поддерживаются через `proxy_url`. Прямой клиент принудительно не использует системный прокси, чтобы сравнение маршрутов оставалось честным.
-- `HEAD` корректно переключается на `GET` при 405/501 и не расходует попытку. Повторяются временные HTTP 408/425/429/500–504.
-- Тело ответа читается только до заданного лимита; число одновременных проверок ограничено.
-- Старый список `websites` и `website_groups` работают одновременно. Некорректные URL и заголовки пропускаются, а повреждённый `config.json` больше не перезаписывается.
-- История хранит сутки с учётом интервала, журнал сохраняет подкаталоги, CSV содержит диагностические поля, уведомления проверяют HTTP-ответ webhook.
-- `SiteMonitor` и `SiteMonitorLite` — один полноэкранный интерфейс на ratatui вместо двух копий ручной отрисовки: сайты добавляются и удаляются прямо в программе, настройки редактируются с проверкой значений, а ошибки сохранения и уведомлений попадают в раздел «События», не ломая экран.
-- Распознавание заглушек больше не срабатывает на обычные страницы со словами «заблокирован» или «единый реестр» и не теряет заглушку, если лимит тела обрезал UTF-8-символ.
-- Адреса с IPv6-литералом (`http://[::1]:8080/`) проверяются корректно, системный DNS ограничен таймаутом запроса, а токен Telegram и URL вебхуков не попадают в тексты ошибок.
-- Проверка ожидаемого текста в ответе, порог медленного ответа, контроль срока TLS-сертификата и регистрации домена, окна обслуживания.
-- Постоянный фоновый режим `--watch` для systemd и консоли, служба Windows и метрики Prometheus.
-
-## Сборка и запуск
+### Сборка и запуск
 
 ```powershell
 cargo build --release --bins
@@ -50,7 +46,7 @@ cargo build --release --bins
 
 Параметр `--config PATH` задаёт другой файл настроек, `--help` выводит справку.
 
-## Интерфейс
+### Интерфейс
 
 Пять разделов, переключаются цифрами `1`–`5` или `Tab`:
 
@@ -68,243 +64,58 @@ cargo build --release --bins
 
 Статус всегда подписан текстом, цвет лишь дублирует его. Цвета задаются в `color_theme` (`Green`, `DarkCyan`, `LightRed`, `#1e90ff` и т. п.); переменная окружения `NO_COLOR` отключает цвета полностью. Если `config.json` повреждён, программа работает с настройками по умолчанию и отказывается сохранять изменения, пока файл не исправлен.
 
-## Что проверяется помимо доступности
-
-| Проверка | Как работает | Статус |
-|---|---|---|
-| Ожидаемый текст | Ответ должен содержать заданную строку (без учёта регистра); читается до 1 МБ тела. Задаётся клавишей `T` в списке сайтов или полем `expect_text` | `CONTENT_MISMATCH` — сбой |
-| Медленный ответ | Ответ дольше `slow_threshold_ms` (по умолчанию 3000 мс, `0` — выкл.). Для отдельного сайта — поле `slow_threshold_ms` | `SLOW` — предупреждение |
-| Сертификат | Дата окончания берётся из сертификата, полученного при обычном HTTPS-запросе | `CERT_EXPIRING` за `cert_warn_days` дней (по умолчанию 14) |
-| Домен | Дата окончания регистрации через RDAP (адрес реестра из списка IANA), для зон без RDAP (`.ru`, `.рф`, `.su`) — через WHOIS. Кешируется на 12 часов | `DOMAIN_EXPIRING` за `domain_warn_days` дней (по умолчанию 30) |
-| Окна обслуживания | В заданное время проверки идут, но сбои не вызывают уведомлений и не портят аптайм | `ОБСЛУЖИВАНИЕ` в интерфейсе, `maintenance: true` в JSON |
-
-Предупреждения (`WARN`, `SLOW`, `CERT_EXPIRING`, `DOMAIN_EXPIRING`) означают, что сайт доступен: уведомления о сбое по ним не отправляются. Все сроки видны в подробностях сайта (`Enter`), срок сертификата — ещё и в отдельном столбце таблицы «Сайты».
-
-## Headless-режим
-
-Одноразовая проверка для планировщика, CI или PowerShell:
-
-```powershell
-.\target\release\website_accessibility_monitor.exe --json https://example.com https://example.net
-```
-
-Без URL headless-команда читает `config.json` из текущей папки. Схему можно не указывать: `example.com` проверяется как `https://example.com/`. Код завершения `0` означает, что все цели имеют статус `OK`/`WARN`; `2` — что есть недоступные цели; `1` — ошибка запуска (например, некорректный URL). Параметр `--config PATH` задаёт другой файл конфигурации.
-
-На Windows также доступны `Start.bat` и `StartLite.bat`. При первом запуске рядом с исполняемым файлом создаётся `config.json`.
-
-## Фоновый режим, служба и метрики
-
-`--watch` проверяет сайты постоянно, без интерфейса: по расписанию, с уведомлениями, историей аптайма, журналом и CSV, как в `SiteMonitor`. Изменения в `config.json` подхватываются автоматически, без перезапуска. События пишутся в консоль (или в файл через `--log-file`), `--quiet` скрывает итоги циклов без сбоев. Остановка — `Ctrl+C` или `SIGTERM`, история аптайма при этом сохраняется.
-
-```powershell
-.\target\release\website_accessibility_monitor.exe --watch --config C:\WAM\config.json --metrics 127.0.0.1:9898
-```
-
-Относительные пути из настроек (история, журнал, CSV) считаются от папки, где лежит `config.json`.
-
-**Служба Windows.** Из консоли, запущенной от имени администратора:
-
-```powershell
-.\target\release\website_accessibility_monitor.exe --install-service --config C:\WAM\config.json --metrics 127.0.0.1:9898
-```
-
-Служба `WebsiteAccessibilityMonitor` запускается сразу и затем автоматически вместе с Windows. Журнал событий — `wam-service.log` рядом с `config.json` (или путь из `--log-file`). Удаление: `--uninstall-service`.
-
-**Linux (systemd).** Готовый юнит с инструкцией по установке — [deploy/wam.service](deploy/wam.service); события читаются через `journalctl -u wam -f`.
-
-**Prometheus.** С `--metrics АДРЕС` по адресу `http://АДРЕС/metrics` отдаются:
-
-| Метрика | Значение |
-|---|---|
-| `wam_up` | 1 — сайт доступен (OK или предупреждение), 0 — нет |
-| `wam_status{status="..."}` | Текущий диагностический статус |
-| `wam_maintenance` | 1 — проверка пришлась на окно обслуживания |
-| `wam_response_time_seconds` | Время ответа |
-| `wam_http_status_code` | HTTP-код |
-| `wam_content_match` | 1/0 — найден ли ожидаемый текст |
-| `wam_cert_expiry_timestamp_seconds` | Окончание сертификата (Unix time) |
-| `wam_domain_expiry_timestamp_seconds` | Окончание регистрации домена (Unix time) |
-| `wam_uptime_ratio` | Доля успешных проверок за 24 часа |
-| `wam_checks_total{result="ok\|failed"}` | Счётчик проверок с момента запуска |
-| `wam_last_check_timestamp_seconds`, `wam_last_cycle_*` | Время последней проверки и цикла |
-
-Все метрики сайтов имеют метки `url` и `group`. Пример правил алертов — [deploy/prometheus-alerts.yml](deploy/prometheus-alerts.yml). `/health` отвечает `ok` для проверок живости. Если указать только порт (`--metrics 9898`), слушается `127.0.0.1`; открывать порт наружу стоит только за файрволом: в метках видны адреса сайтов.
-
-## Актуальный формат config.json
-
-```json
-{
-  "monitor_settings": {
-    "interval": 60,
-    "timeout": 8,
-    "retries_max": 2,
-    "valid_status_codes": [200, 201, 202, 204, 301, 302, 307, 308],
-    "warn_status_codes": [401, 403, 407, 408, 425, 429],
-    "sorted": "status",
-    "ping_enabled": true,
-    "uptime_enabled": true,
-    "use_head_first": false,
-    "proxy_url": "socks5h://127.0.0.1:1080",
-    "doh_server": "https://cloudflare-dns.com/dns-query",
-    "max_concurrency": 32,
-    "response_body_limit_kb": 64,
-    "diagnostics_enabled": true,
-    "slow_threshold_ms": 3000,
-    "cert_warn_days": 14,
-    "domain_check_enabled": true,
-    "domain_warn_days": 30
-  },
-  "websites": [
-    "https://example.com",
-    "http://example.net:8080/health",
-    { "url": "https://shop.example.com", "expect_text": "Корзина", "slow_threshold_ms": 1500 }
-  ],
-  "website_groups": [
-    {
-      "name": "API",
-      "interval": 30,
-      "sites": [
-        {
-          "url": "https://api.example.com/health",
-          "headers": { "Authorization": "Bearer TOKEN" }
-        }
-      ]
-    }
-  ],
-  "Monitor": {
-    "logging_enabled": true,
-    "log_file_path": "logs/monitor.log",
-    "log_max_size_mb": 10,
-    "log_rotate_daily": true
-  },
-  "csv_export": {
-    "enabled": false,
-    "file_path": "results.csv"
-  },
-  "webhooks": {
-    "enabled": false,
-    "telegram_bot_token": "",
-    "telegram_chat_id": "",
-    "discord_webhook_url": "",
-    "slack_webhook_url": "",
-    "notify_on_down": true,
-    "notify_on_recovery": true,
-    "min_failures_before_alert": 3
-  },
-  "uptime_history_path": "uptime_history.json",
-  "maintenance_windows": [
-    { "name": "Ночные бэкапы", "days": ["пн", "ср", "пт"], "start": "02:00", "end": "02:30" },
-    { "name": "Релиз API", "start": "23:30", "end": "00:30", "targets": ["api.example.com", "API"] }
-  ]
-}
-```
-
-Сайт в `websites` и в `sites` групп задаётся строкой или объектом с полями `url`, `headers`, `expect_text`, `slow_threshold_ms`. Сайты без дополнительных полей программа сохраняет обратно строками.
-
-В окне обслуживания `days` — дни недели (`mon`..`sun` или `пн`..`вс`, пусто — каждый день), `start`/`end` — местное время `ЧЧ:ММ`; окно через полночь относится к дню начала. `targets` — части адреса или имени группы, пусто — все сайты.
-
-`proxy_url` оставьте пустым, если контрольный маршрут не нужен. Для SOCKS с разрешением имени на стороне прокси используйте схему `socks5h://`; это особенно важно, когда локальный DNS недоступен или подменён. Секреты в заголовках и webhook-настройках хранятся в обычном JSON — ограничьте доступ к файлу и не добавляйте его в Git.
-
-## Статусы диагностики
-
-| Статус | Значение |
-|---|---|
-| `OK` / `WARN` | Прямой HTTP-запрос получил разрешённый или предупреждающий код |
-| `SLOW` / `CERT_EXPIRING` / `DOMAIN_EXPIRING` | Сайт доступен, но отвечает медленнее порога или скоро истекает сертификат либо домен |
-| `CONTENT_MISMATCH` | Сервер ответил допустимым кодом, но в ответе нет ожидаемого текста |
-| `HTTP_ERROR` | Код ответа не входит ни в разрешённые, ни в предупреждающие |
-| `DNS_ERROR` | Системный DNS не дал адрес; блокировка не подтверждена |
-| `DNS_BLOCK` | Системный DNS не дал адрес, DoH дал адреса, а URL доступен через прокси |
-| `TCP_TIMEOUT` / `TCP_RESET` | Ошибка TCP на фактическом порту URL без достаточного подтверждения причины |
-| `TCP_BLOCK` | TCP прямого пути не работает, но URL доступен через прокси |
-| `TLS_ERROR` / `SSL_ERROR` | TLS-рукопожатие не прошло; возможны сертификат, сервер, антивирус или сеть |
-| `TLS_BLOCK` | Сбой TLS прямого пути подтверждён успешным доступом через прокси |
-| `HTTP_STUB` | Получен HTTP 451 или в ограниченном фрагменте тела найдены признаки заглушки |
-| `HTTP_BLOCK` | Заглушка/HTTP-сбой отсутствует на контрольном прокси-маршруте |
-| `HTTP_TIMEOUT` | TCP/TLS работают, но HTTP не завершился; возможны перегрузка или троттлинг |
-
-## Ограничения измерений
-
-Один компьютер видит только свою сеть, DNS и маршрут. Без независимой контрольной точки нельзя надёжно отличить блокировку от сбоя сайта, маршрутизации, CDN, антивируса или корпоративного фильтра. DoH показывает доступность конкретного DoH-сервера и альтернативный DNS-ответ, но не является доказательством вмешательства. Программа не обходит блокировки автоматически и не реализует ECH/QUIC; прокси используется только для явно настроенной контрольной проверки и webhook-уведомлений.
-
-## Разработка
-
-```powershell
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo build --release --bins
-```
-
-CI (`.github/workflows/rust.yml`) выполняет эти проверки на Windows и Linux.
-
-## Структура проекта
-
-| Путь | Назначение |
-|---|---|
-| `src/main.rs` | Бинарь `website_accessibility_monitor`: headless-проверка (`--json`), `--watch`, служба Windows, `--metrics` |
-| `src/bin/sitemonitor.rs`, `src/bin/sitemonitor_lite.rs` | Бинари `SiteMonitor` и `SiteMonitorLite` (TUI) |
-| `src/tui/` | Интерфейс на ratatui |
-| `src/monitor.rs`, `src/network.rs`, `src/notice.rs`, `src/expiry.rs` | Проверки, диагностика, заглушки, сроки сертификатов и доменов |
-| `src/config.rs`, `src/model.rs`, `src/storage.rs` | Формат и сохранение `config.json`, история, журнал, CSV |
-| `src/daemon.rs`, `src/service.rs`, `src/metrics.rs`, `src/webhooks.rs` | Фоновый режим, служба Windows, Prometheus, уведомления |
-| `deploy/` | Юнит systemd и пример правил алертов Prometheus |
-| `Start.bat`, `StartLite.bat` | Запуск TUI на Windows (собирают release-бинарь через cargo, если его нет) |
-
-`config.json`, `uptime_history.json` и `results.csv` — локальные данные, они в `.gitignore`.
-
-## Лицензия
-
-MIT, см. [LICENSE](LICENSE).
-
----
+Фоновый режим, служба Windows, метрики Prometheus, формат настроек и все статусы описаны в [руководстве](docs/USER_GUIDE_RU.md).
 
 ## English
 
-WAM is a console uptime monitor for HTTP/HTTPS resources. It checks DNS, HTTP, the actual TCP port of the URL, TLS for HTTPS and known block-page stubs; when `proxy_url` is set it compares the direct path with an HTTP/SOCKS proxy route to tell outages from likely blocking.
+### What It Is
+
+WAM is a console uptime monitor for HTTP/HTTPS resources. It checks DNS, HTTP, the actual TCP port of the URL, TLS for HTTPS and known block-page stubs; when `proxy_url` is set it compares the direct path with an HTTP/SOCKS proxy route.
 
 - Status: active. Version 2.1.0, a Rust port (the earlier .NET version has been removed).
 - Stack: Rust 2024 (MSRV 1.88), tokio, reqwest, ratatui/crossterm; on Windows `windows-service` and `winping`.
-- Requirements: Rust 1.88+; on Linux an OpenSSL development package (TLS uses `native-tls`).
+- Requirements: Rust 1.88+ (`rustup`); on Linux an OpenSSL development package (TLS uses `native-tls`).
 
-### Build and run
+### Building and Running
 
 ```powershell
 cargo build --release --bins
-.\target\release\SiteMonitor.exe        # full TUI
-.\target\release\SiteMonitorLite.exe    # compact TUI for narrow windows / SSH
 ```
 
-On Windows `Start.bat` / `StartLite.bat` do the same (building with cargo if the binary is missing). The TUI creates `config.json` next to the executable on first start; `--config PATH` points to another file.
-
-The `website_accessibility_monitor` binary covers non-interactive use:
-
-| Flag | Purpose |
-|---|---|
-| `--json [URL...]` | One-shot check, JSON output. Exit code 0 = all OK/WARN, 2 = something down, 1 = startup error |
-| `--watch` | Continuous background monitoring (notifications, uptime history, log, CSV); reloads `config.json` on change |
-| `--metrics ADDR` | Prometheus endpoint `http://ADDR/metrics` and `/health` (port only means `127.0.0.1`) |
-| `--install-service` / `--uninstall-service` | Windows service `WebsiteAccessibilityMonitor` (run as administrator) |
-| `--config PATH`, `--log-file PATH`, `--quiet` | Config file (default `config.json` in the current directory), log file, hide clean cycle summaries |
-
-Linux: see [deploy/wam.service](deploy/wam.service) (systemd) and [deploy/prometheus-alerts.yml](deploy/prometheus-alerts.yml).
-
-### Configuration
-
-All settings live in `config.json` (format above): `monitor_settings`, `websites`, `website_groups`, `Monitor` (logging), `csv_export`, `webhooks` (Telegram / Discord / Slack), `uptime_history_path`, `maintenance_windows`. Header values and webhook tokens are stored in plain JSON; restrict access to the file and keep it out of Git (it is already in `.gitignore`). The only environment variable read is `NO_COLOR`, which disables colours.
-
-### Tests
+Main interface:
 
 ```powershell
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+.\target\release\SiteMonitor.exe
 ```
 
-### Limitations
+Compact interface:
 
-A single machine sees only its own network, DNS and route. A `*_BLOCK` status is a technical hypothesis backed by a successful proxy check, not proof. No automatic circumvention, no ECH/QUIC.
+```powershell
+.\target\release\SiteMonitorLite.exe
+```
 
-### License
+`--config PATH` points to another settings file, `--help` prints the reference.
 
-MIT, see [LICENSE](LICENSE).
+### Interface
+
+Five sections, switched with `1`-`5` or `Tab`:
+
+| Section | What it shows |
+|---|---|
+| Overview | Summary (how many sites are down, when the next check runs), a list with problems on top and details of the selected site |
+| Sites | Full table: status, HTTP code, response time, IP, retries, group |
+| Uptime | Availability over 24 hours and a strip of recent measurements (`█` up, `▁` failed) |
+| Events | Failures and recoveries, cycle summaries, file write and notification errors |
+| Settings | All `monitor_settings`, log, CSV, notification and proxy parameters |
+
+Main keys: `R` check now, `P` pause, `A` add a site, `D` delete (with confirmation), `T` text that must appear in the response, `Enter` details, `/` filter, `S` sort, `E` export CSV, `Ctrl+S` save settings, `Ctrl+R` reload `config.json`, `?` full help, `Q` quit. Hotkeys also work in the Russian layout, and long tokens and addresses can be pasted from the clipboard.
+
+`SiteMonitorLite` has the same features in a compact layout (no summary panel or side details) with less frequent redraws; it suits narrow windows and SSH/RDP. Minimum window size is 50 × 14.
+
+A status is always labelled with text; colour only repeats it. Colours are set in `color_theme` (`Green`, `DarkCyan`, `LightRed`, `#1e90ff` and so on); the `NO_COLOR` environment variable turns them off. If `config.json` is damaged, the app runs on defaults and refuses to save until the file is fixed.
+
+Background mode, Windows service, Prometheus metrics, the config format and all statuses are covered in the [guide](docs/USER_GUIDE_EN.md).
+
+## Лицензия / License
+
+MIT, см. / see [LICENSE](LICENSE).
